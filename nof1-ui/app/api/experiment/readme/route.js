@@ -1,0 +1,6 @@
+import { experimentReadme } from "../../../../lib/mockData";
+
+export async function GET() {
+  return Response.json(experimentReadme);
+}
+
