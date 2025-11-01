@@ -1,6 +1,8 @@
-import { tradesRecent } from "../../../../lib/mockData";
+import { getRecentTrades } from "../../../../lib/dataRepository";
 
-export async function GET() {
-  return Response.json(tradesRecent);
+export async function GET(request) {
+  const url = new URL(request.url);
+  const limit = Number(url.searchParams.get("limit") || 20);
+  const trades = await getRecentTrades(limit);
+  return Response.json({ trades, serverTime: Date.now() });
 }
-

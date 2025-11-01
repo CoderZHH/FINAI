@@ -1,6 +1,9 @@
-import { experimentReadme } from "../../../../lib/mockData";
+import { getExperimentReadme } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(experimentReadme);
+  const readme = await getExperimentReadme();
+  if (!readme) {
+    return Response.json({ message: "experiment readme not found" }, { status: 404 });
+  }
+  return Response.json(readme);
 }
-

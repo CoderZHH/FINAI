@@ -1,6 +1,6 @@
-﻿import { pendingDecisions } from "../../../../lib/mockData";
+import { getPendingDecisions } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json({ decisions: pendingDecisions });
+  const decisions = await getPendingDecisions();
+  return Response.json({ decisions });
 }
-

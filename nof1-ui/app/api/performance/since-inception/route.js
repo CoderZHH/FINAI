@@ -1,6 +1,6 @@
-import { sinceInception } from "../../../../lib/mockData";
+import { getSinceInceptionValues } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(sinceInception);
+  const sinceInceptionValues = await getSinceInceptionValues();
+  return Response.json({ sinceInceptionValues, serverTime: Date.now() });
 }
-

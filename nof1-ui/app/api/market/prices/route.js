@@ -1,5 +1,6 @@
-import { marketPrices } from "../../../../lib/mockData";
+import { getMarketSnapshot } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(marketPrices);
+  const snapshot = await getMarketSnapshot();
+  return Response.json(snapshot);
 }

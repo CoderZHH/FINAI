@@ -1,5 +1,6 @@
-import { modeState } from "../../../lib/mockData";
+import { getModeState } from "../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(modeState);
+  const state = await getModeState();
+  return Response.json(state);
 }

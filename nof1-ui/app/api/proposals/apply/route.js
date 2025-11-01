@@ -1,5 +1,7 @@
-﻿export async function POST(request) {
+import { saveProposalRequest } from "../../../../lib/dataRepository";
+
+export async function POST(request) {
   const payload = await request.json();
-  // TODO: 将申请的交易批量写入撮合队列或风控系统
-  return Response.json({ ok: true, received: payload });
+  const result = await saveProposalRequest(payload);
+  return Response.json({ ok: true, ...result });
 }

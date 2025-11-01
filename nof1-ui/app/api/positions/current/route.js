@@ -1,6 +1,6 @@
-import { positionsCurrent } from "../../../../lib/mockData";
+import { getPositionsSnapshot } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(positionsCurrent);
+  const accountTotals = await getPositionsSnapshot();
+  return Response.json({ accountTotals, serverTime: Date.now() });
 }
-

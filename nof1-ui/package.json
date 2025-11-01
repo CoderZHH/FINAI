@@ -6,7 +6,9 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "lint": "next lint"
+    "lint": "next lint",
+    "fetch:prices": "node --env-file=.env.local scripts/fetch-prices.js",
+    "seed:static": "node --env-file=.env.local scripts/seed-static-data.js"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +16,10 @@
   "description": "",
   "dependencies": {
     "classnames": "^2.5.1",
+    "ioredis": "^5.4.1",
     "next": "^16.0.1",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.12.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "recharts": "^3.3.0",

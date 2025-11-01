@@ -1,6 +1,6 @@
-import { performanceTimeseries } from "../../../../lib/mockData";
+import { getPerformanceTimeseries } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json(performanceTimeseries);
+  const seriesData = await getPerformanceTimeseries();
+  return Response.json({ ...seriesData, serverTime: Date.now() });
 }
-

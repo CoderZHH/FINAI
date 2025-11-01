@@ -1,6 +1,6 @@
-﻿import { proposalAssets } from "../../../../lib/mockData";
+import { getProposalAssets } from "../../../../lib/dataRepository";
 
 export async function GET() {
-  return Response.json({ assets: proposalAssets });
+  const assets = await getProposalAssets();
+  return Response.json({ assets });
 }
-
