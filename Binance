@@ -1,0 +1,231 @@
+一、Spot 现货 REST API（用于 K 线、价格数据）
+
+Base URL（REST 公共行情）：
+
+https://api.binance.com
+
+或专门的行情域名：https://data-api.binance.vision（只支持部分 market data 接口）
+Binance Developers
++1
+
+1. K 线 / Candlestick（现货）
+
+官方接口文档：Kline/Candlestick data 
+Binance Developers
++1
+
+# Spot Klines (Candlestick Data)
+GET /api/v3/klines
+
+Parameters:
+  symbol    STRING   required   # 例如 "BTCUSDT"
+  interval  ENUM     required   # "1m","3m","5m","15m","1h","4h","1d"...（大小写敏感）
+  startTime LONG     optional   # 毫秒时间戳
+  endTime   LONG     optional   # 毫秒时间戳
+  timeZone  STRING   optional   # 默认 0 (UTC)
+  limit     INT      optional   # 默认 500, 最大 1000
+
+Returns:
+  Array of klines, each kline = [
+    openTime, open, high, low, close, volume,
+    closeTime, quoteAssetVolume, numberOfTrades,
+    takerBuyBaseVolume, takerBuyQuoteVolume, ignore
+  ]
+
+
+历史数据：每次请求最多 1000 根 K 线，时间范围不做死限制，你可以用 startTime 分段循环，把数据从上市那天一路拉回去。
+Binance Developers
++1
+
+二、USDⓈ-M 永续合约 REST API（Funding / Open Interest / 期货 K 线）
+
+Base URL（USDT 永续）： https://fapi.binance.com 
+Binance Developers
++1
+
+1. 期货 K 线 / Candlestick（USDT 永续）
+
+官方文档：USDS-M Kline Candlestick Data 
+Binance Developers
+
+# Futures Klines (USDS-M Futures)
+GET /fapi/v1/klines
+
+Parameters:
+  symbol    STRING   required   # 如 "BTCUSDT"
+  interval  ENUM     required   # "1m","3m","5m","15m","1h","4h","1d" 等
+  startTime LONG     optional   # 毫秒时间戳
+  endTime   LONG     optional   # 毫秒时间戳
+  limit     INT      optional   # 默认 500, 最大 1500
+
+Notes:
+  # 如果不传 startTime / endTime，返回最近的 klines
+
+
+历史长度：单次最大 limit = 1500，文档没有写总共最多能拉多久，所以要自己用 startTime 分段循环，直到没有数据返回为止。
+Binance Developers
+
+2. 当前 Open Interest（open_interest）
+
+官方文档：USDS-M Futures → Open Interest 
+Binance Developers
++1
+
+# 当前合约未平仓量 (Open Interest)
+GET /fapi/v1/openInterest
+
+Parameters:
+  symbol STRING required  # 如 "BTCUSDT"
+
+Response (example):
+{
+  "openInterest": "10659.509",
+  "symbol": "BTCUSDT",
+  "time": 1589437530011   # 服务器时间 (ms)
+}
+
+
+这个接口给的是当前时刻的 open interest，不是时间序列。
+如果你想做指标（例如 “latestMinute.openInterest” 或画线），需要自己定时轮询该接口，存成本地历史。
+
+3. Open Interest 统计历史（open_interest 历史）
+
+官方文档：Open Interest Statistics 
+Binance Developers
+
+# Open Interest 历史统计
+GET /futures/data/openInterestHist
+
+Parameters:
+  symbol     STRING  required   # 合约，如 "BTCUSDT"
+  period     ENUM    required   # "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+  limit      INT     optional   # 默认 30，最大 500
+  startTime  LONG    optional
+  endTime    LONG    optional
+
+# 返回一系列时间点上的 open interest 统计，用来画 OI 曲线
+
+
+这个接口更适合你做 open_interest 指标的历史线，而不是自己每分钟轮询 openInterest。
+
+4. Funding Rate 历史（funding_rate）
+
+官方文档：Get Funding Rate History 
+Binance Developers
++2
+Binance
++2
+
+# Funding Rate 历史
+GET /fapi/v1/fundingRate
+
+Parameters:
+  symbol     STRING  optional   # 不传则可能返回多个合约数据（视实现而定）
+  startTime  LONG    optional   # 毫秒
+  endTime    LONG    optional   # 毫秒
+  limit      INT     optional   # 默认 100, 最大 1000
+
+# 返回 funding 时间点、fundingRate 等字段
+
+
+历史长度：接口限制单次 limit <= 1000，官方没有明确写“最多只能查几个月 / 几年”。实际使用中，你可以从现在往回翻页，直到不再返回数据。
+
+5. Funding Rate Info（资金费率规则信息，例如 cap/floor）
+
+官方文档：Get Funding Rate Info（用于查询 fundingRateCap / fundingRateFloor / fundingIntervalHours 的调整情况）
+Binance Developers
++2
+Binance
++2
+
+# Funding Rate Info（规则信息，不是每个时刻的 funding 值）
+GET /fapi/v1/fundingInfo
+
+Parameters:
+  symbol STRING optional   # 支持按合约查询
+
+# 用来查某些合约的资金费率上限/下限/间隔调整情况
+
+6. 交易所规则 & 交易对信息（tickSize、最小下单量等）
+
+官方文档：Exchange Information 
+Binance Developers
++1
+
+# 交易所规则 & 交易对信息 (Futures)
+GET /fapi/v1/exchangeInfo
+
+Parameters:
+  # 当前文档版本中没有必选参数，可直接调用
+
+# 返回每个 symbol 的：
+# - priceFilter: tickSize, minPrice, maxPrice
+# - lotSize: minQty, maxQty, stepSize
+# - 其他与交易相关的规则限制
+
+三、COIN-M 合约 K 线（补充：200 天限制的例子）
+
+官方文档：COIN-M Kline Candlestick Data 
+Binance Developers
+
+# COIN-M Futures Klines
+GET /dapi/v1/klines
+
+Parameters:
+  symbol    STRING required
+  interval  ENUM   required
+  startTime LONG   optional
+  endTime   LONG   optional
+  limit     INT    optional   # 默认 500, 最大 1500
+
+Notes:
+  # startTime 和 endTime 的时间差最多 200 天
+  # 如果不传 startTime / endTime，会自动以当前时间为 endTime，返回最近数据
+  # 如果只传 startTime，endTime 会在 startTime + 200 天 和 当前时间 之间取较小值
+
+
+这个例子说明：有些接口明确限制单次时间跨度（200 天），但你可以多次请求拼接更长历史。
+
+四、关于你关心的指标 vs Binance 能不能直接拿
+
+结合你之前问的这些字段：
+
+ema50, ema20_htf, ema50_htf, macd_htf
+→ 都需要你自己用 K 线数据本地计算，Binance 不直接给 EMA / MACD 数值。
+→ 用上面的 /api/v3/klines（现货）或 /fapi/v1/klines（期货）拉历史价格，然后用你自己的指标库算。
+
+open_interest
+→ 期货：可以用
+
+当前值：GET /fapi/v1/openInterest
+
+历史统计：GET /futures/data/openInterestHist
+→ 现货没有 open interest 的概念。
+
+funding_rate
+→ 永续合约专用指标，可以用：
+
+历史：GET /fapi/v1/fundingRate
+
+规则信息（cap/floor/interval）：GET /fapi/v1/fundingInfo
+
+五、Binance 历史数据“能拿多久”的总结
+
+给你一个 Codex 能理解的简洁结论：
+
+# Spot /api/v3/klines
+- limit <= 1000 per request
+- 没写总时长上限，可用 startTime 分段，从很早一直拉到没有数据为止
+
+# USDS-M Futures /fapi/v1/klines
+- limit <= 1500 per request
+- 文档未写总时长上限，实际需按 startTime/endTime 分段循环
+
+# COIN-M Futures /dapi/v1/klines
+- 单次时间跨度 <= 200 days
+- 可多次请求拼接更长历史
+
+# Funding & OI 历史
+- /fapi/v1/fundingRate: limit <= 1000，每次一段
+- /futures/data/openInterestHist: limit <= 500，每次一段
+- 文档未严格写总历史可用范围，需分页拉取直到无返回数据

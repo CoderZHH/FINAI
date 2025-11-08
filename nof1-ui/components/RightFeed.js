@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 
-// TODO: 接入真实后端时，请改用统一的数据请求封装（如 apiClient 或自定义 hook），方便落地鉴权与错误处理。
 const fetcher = (url) => fetch(url).then((response) => response.json());
 
 const TAB_CONFIG = [
@@ -47,7 +46,6 @@ const formatQuantity = (value) => {
 
 const humanizeModel = (id = "") => MODEL_LABELS[id] ?? id;
 
-// FeedRow 负责呈现单条成交记录，包含来源、方向、价格与盈亏信息。
 function FeedRow({ row }) {
   const sideClass = row.sideType === "SHORT" ? "text-rose-600" : "text-emerald-600";
 
@@ -79,7 +77,6 @@ function FeedRow({ row }) {
   );
 }
 
-// CompletedPanel 展示最近成交流水，来自 /api/trades/recent，可替换为真实撮合记录。
 function CompletedPanel() {
   const { data } = useSWR("/api/trades/recent", fetcher, { suspense: false, refreshInterval: 5000 });
   const trades = data?.trades ?? [];
@@ -90,7 +87,7 @@ function CompletedPanel() {
 
   return (
     <div className="space-y-3">
-      {trades.map((trade, idx) => {
+      {trades.map((trade) => {
         const sideType = String(trade.side ?? "LONG").toUpperCase();
         const entryPrice = trade.entry_price ?? trade.price ?? null;
         const exitPrice = trade.exit_price ?? entryPrice;
@@ -101,7 +98,7 @@ function CompletedPanel() {
 
         return (
           <FeedRow
-            key={`${trade.model_id}-${idx}`}
+            key={trade.id}
             row={{
               model: humanizeModel(trade.model_id),
               action: DECISION_SOURCE_MAP[trade.decision_source] ?? "来源未知",
@@ -112,10 +109,10 @@ function CompletedPanel() {
               entryPrice: formatPrice(entryPrice),
               exitPrice: formatPrice(exitPrice),
               quantity: formatQuantity(quantity),
-              notionalStart: formatCurrency(Math.abs(notionalStart)),
-              notionalEnd: formatCurrency(Math.abs(notionalEnd)),
+              notionalStart: formatCurrency(notionalStart),
+              notionalEnd: formatCurrency(notionalEnd),
               holding: trade.holding_time ?? "—",
-              pnl: `${pnl >= 0 ? "+" : "-"}US$${Math.abs(pnl).toFixed(2)}`,
+              pnl: formatCurrency(pnl),
             }}
           />
         );
@@ -124,41 +121,25 @@ function CompletedPanel() {
   );
 }
 
-// DecisionPanel 呈现待人工确认的 AI 提案，并允许用户编辑后提交到 /api/decisions/confirm。
 function DecisionPanel() {
-  const { data, mutate } = useSWR("/api/decisions/pending", fetcher, { suspense: false });
+  const { data, mutate } = useSWR("/api/decisions/pending", fetcher, {
+    suspense: false,
+    refreshInterval: 8000,
+  });
   const pending = data?.decisions ?? [];
-  const [editing, setEditing] = useState({});
-  const [savingId, setSavingId] = useState(null);
+  const [submitting, setSubmitting] = useState(null);
 
-  useEffect(() => {
-    const next = Object.fromEntries(pending.map((item) => [item.id, { ...item }]));
-    setEditing(next);
-  }, [pending]);
-
-  const handleChange = (id, field, value) => {
-    setEditing((prev) => ({
-      ...prev,
-      [id]: {
-        ...prev[id],
-        [field]: value,
-      },
-    }));
-  };
-
-  const handleConfirm = async (id) => {
-    const payload = editing[id];
-    if (!payload) return;
-    setSavingId(id);
+  const handleAction = async (id, action) => {
+    setSubmitting(`${id}:${action}`);
     try {
       await fetch("/api/decisions/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ decision_id: id, action }),
       });
       await mutate();
     } finally {
-      setSavingId(null);
+      setSubmitting(null);
     }
   };
 
@@ -169,78 +150,82 @@ function DecisionPanel() {
   return (
     <div className="space-y-3">
       {pending.map((decision) => {
-        const local = editing[decision.id] ?? decision;
+        const entries = Object.entries(decision.decision_blob?.decisions ?? {}).filter(([, value]) => value);
+        const reasoning = decision.decision_blob?.reasoning ?? "";
+        const promptText = decision.decision_blob?.prompt_text ?? "";
+        const responseText = decision.decision_blob?.response_text ?? "";
+        const isFallback = decision.decision_blob?.is_fallback ?? false;
         return (
           <div key={decision.id} className="rounded border px-3 py-2 text-[12px] space-y-2">
             <div className="flex items-center justify-between text-[11px] text-neutral-500">
-              <span>{humanizeModel(decision.modelId)} · {decision.asset}</span>
-              <span>{new Date(decision.timestamp).toLocaleString("zh-CN")}</span>
+              <span>{decision.model_name ?? humanizeModel(decision.model_id)}</span>
+              <span>{new Date(decision.inserted_at).toLocaleString("zh-CN")}</span>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-[11px]">
-              <label className="space-y-1">
-                <span>方向</span>
-                <select
-                  value={local.side}
-                  onChange={(event) => handleChange(decision.id, "side", event.target.value)}
-                  className="w-full rounded border px-2 py-1"
-                >
-                  <option value="LONG">做多 LONG</option>
-                  <option value="SHORT">做空 SHORT</option>
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span>目标价</span>
-                <input
-                  type="number"
-                  value={local.target}
-                  onChange={(event) => handleChange(decision.id, "target", Number(event.target.value))}
-                  className="w-full rounded border px-2 py-1"
-                />
-              </label>
-              <label className="space-y-1">
-                <span>止损价</span>
-                <input
-                  type="number"
-                  value={local.stopLoss}
-                  onChange={(event) => handleChange(decision.id, "stopLoss", Number(event.target.value))}
-                  className="w-full rounded border px-2 py-1"
-                />
-              </label>
-              <label className="space-y-1">
-                <span>仓位规模</span>
-                <input
-                  type="number"
-                  value={local.size}
-                  onChange={(event) => handleChange(decision.id, "size", Number(event.target.value))}
-                  className="w-full rounded border px-2 py-1"
-                />
-              </label>
-              <label className="space-y-1">
-                <span>杠杆倍数</span>
-                <input
-                  type="number"
-                  value={local.leverage ?? 1}
-                  onChange={(event) => handleChange(decision.id, "leverage", Number(event.target.value))}
-                  className="w-full rounded border px-2 py-1"
-                />
-              </label>
-              <label className="col-span-2 space-y-1">
-                <span>决策说明</span>
-                <textarea
-                  value={local.comment}
-                  onChange={(event) => handleChange(decision.id, "comment", event.target.value)}
-                  className="w-full rounded border px-2 py-1"
-                  rows={3}
-                />
-              </label>
+            {reasoning ? (
+              <div className="text-[11px] text-neutral-700 whitespace-pre-wrap leading-relaxed">{reasoning}</div>
+            ) : null}
+            {isFallback ? (
+              <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                ⚠️ 当前决策使用了占位或回退结果，请在执行前仔细检查。
+              </div>
+            ) : null}
+            <div className="overflow-x-auto">
+              <table className="mt-1 w-full border text-[11px] text-neutral-600">
+                <thead className="bg-neutral-100">
+                  <tr>
+                    <th className="px-2 py-1 text-left">资产</th>
+                    <th className="px-2 py-1 text-left">信号</th>
+                    <th className="px-2 py-1 text-left">数量</th>
+                    <th className="px-2 py-1 text-left">杠杆</th>
+                    <th className="px-2 py-1 text-left">止盈</th>
+                    <th className="px-2 py-1 text-left">止损</th>
+                    <th className="px-2 py-1 text-left">风险预算</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map(([symbol, value]) => (
+                    <tr key={symbol} className="border-t">
+                      <td className="px-2 py-1 font-medium text-neutral-800">{symbol}</td>
+                      <td className="px-2 py-1 uppercase">{value.signal}</td>
+                      <td className="px-2 py-1">{formatQuantity(value.quantity)}</td>
+                      <td className="px-2 py-1">{value.leverage ?? 1}x</td>
+                      <td className="px-2 py-1">{value.profit_target ?? "—"}</td>
+                      <td className="px-2 py-1">{value.stop_loss ?? "—"}</td>
+                      <td className="px-2 py-1">{value.risk_usd != null ? formatCurrency(value.risk_usd) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <button
-              onClick={() => handleConfirm(decision.id)}
-              className="bg-neutral-900 px-3 py-1 text-xs font-semibold text-white hover:bg-neutral-700"
-              disabled={savingId === decision.id}
-            >
-              {savingId === decision.id ? "提交中…" : "确认修改"}
-            </button>
+            {promptText ? (
+              <details className="rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]">
+                <summary className="cursor-pointer font-semibold text-neutral-600">查看提示词 / 响应</summary>
+                <div className="mt-1">
+                  <div className="text-neutral-500">提示词：</div>
+                  <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{promptText}</pre>
+                </div>
+                <div className="mt-2">
+                  <div className="text-neutral-500">模型回复：</div>
+                  <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{responseText}</pre>
+                </div>
+              </details>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleAction(decision.id, "approve")}
+                className="rounded bg-neutral-900 px-3 py-1 text-xs font-semibold text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:bg-neutral-400"
+                disabled={submitting === `${decision.id}:approve`}
+              >
+                {submitting === `${decision.id}:approve` ? "批准中..." : "批准执行"}
+              </button>
+              <button
+                onClick={() => handleAction(decision.id, "reject")}
+                className="rounded border border-neutral-300 px-3 py-1 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-400"
+                disabled={submitting === `${decision.id}:reject`}
+              >
+                {submitting === `${decision.id}:reject` ? "驳回中..." : "拒绝提案"}
+              </button>
+            </div>
           </div>
         );
       })}
@@ -248,7 +233,6 @@ function DecisionPanel() {
   );
 }
 
-// ModelChatPanel 显示 /api/agents/logs 返回的自然语言解释，用于审计与回放。
 function ModelChatPanel() {
   const { data } = useSWR("/api/agents/logs", fetcher, { suspense: false, refreshInterval: 8000 });
   const logs = data?.logs ?? [];
@@ -259,38 +243,45 @@ function ModelChatPanel() {
 
   return (
     <div className="space-y-3">
-      {logs.map((entry, idx) => (
-        <div key={`${entry.model_id}-${idx}`} className="rounded border px-3 py-2 text-[12px] leading-relaxed">
-          <div className="flex items-center justify-between text-[11px] text-neutral-500">
-            <span>{humanizeModel(entry.model_id)}</span>
-            <span>{new Date(entry.timestamp).toLocaleString("zh-CN")}</span>
-          </div>
-          <p className="mt-2 whitespace-pre-wrap">{entry.public_message}</p>
-          {entry.positions_summary?.length ? (
-            <div className="mt-2 space-y-1 text-[11px] text-neutral-600">
-              {entry.positions_summary.map((pos, positionIdx) => (
-                <div key={`${entry.model_id}-${pos.symbol}-${positionIdx}`}>
-                  <strong>{pos.symbol}</strong>
-                  <span className="mx-1 text-neutral-400">·</span>
-                  <span>{pos.side} x{pos.leverage}</span>
-                  <span className="mx-1 text-neutral-400">·</span>
-                  <span>{pos.thesis}</span>
-                  {pos.target ? <span className="ml-1 text-neutral-500">目标 {pos.target}</span> : null}
-                  {pos.invalidation ? <span className="ml-1 text-neutral-500">失效条件 {pos.invalidation}</span> : null}
-                </div>
-              ))}
+      {logs.map((entry) => {
+        const hasDetails = entry.prompt_text || entry.response_text;
+        return (
+          <div
+            key={entry.id ?? `${entry.model_id}-${entry.timestamp}`}
+            className="rounded border px-3 py-2 text-[12px] leading-relaxed"
+          >
+            <div className="flex items-center justify-between text-[11px] text-neutral-500">
+              <span>{humanizeModel(entry.model_id)}</span>
+              <span>{new Date(entry.timestamp).toLocaleString("zh-CN")}</span>
             </div>
-          ) : null}
-          {entry.risk_notes ? (
-            <div className="mt-2 text-[11px] text-amber-600">风险提醒：{entry.risk_notes}</div>
-          ) : null}
-        </div>
-      ))}
+            <p className="mt-2 whitespace-pre-wrap">{entry.public_message}</p>
+            {entry.cot_trace_summary ? (
+              <div className="mt-2 text-[11px] text-neutral-500">总结：{entry.cot_trace_summary}</div>
+            ) : null}
+            {hasDetails ? (
+              <details className="mt-2 rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]">
+                <summary className="cursor-pointer font-semibold text-neutral-600">查看原始对话</summary>
+                {entry.prompt_text ? (
+                  <div className="mt-2">
+                    <div className="text-neutral-500">提示词：</div>
+                    <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{entry.prompt_text}</pre>
+                  </div>
+                ) : null}
+                {entry.response_text ? (
+                  <div className="mt-2">
+                    <div className="text-neutral-500">模型回复：</div>
+                    <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{entry.response_text}</pre>
+                  </div>
+                ) : null}
+              </details>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-// PositionsPanel 读取 /api/positions/current，展示账户权益、可用保证金与单仓退出计划。
 function PositionsPanel() {
   const { data } = useSWR("/api/positions/current", fetcher, { suspense: false, refreshInterval: 8000 });
   const totals = data?.accountTotals ?? [];
@@ -312,9 +303,7 @@ function PositionsPanel() {
             <span>可用保证金 {formatCurrency(account.available_cash)}</span>
           </div>
           {Object.values(account.positions ?? {}).map((pos, index) => {
-            const stopLoss = pos.exit_plan?.stop_loss ?? pos.exit_plan?.stopLoss ?? "—";
-            const profitTarget = pos.exit_plan?.profit_target ?? "—";
-            const invalidation = pos.exit_plan?.invalidation_condition ?? pos.exit_plan?.invalidation ?? "—";
+            const exitPlan = pos.exit_plan ?? {};
             return (
               <div key={`${pos.symbol}-${index}`} className="rounded border px-3 py-2 text-[11px] space-y-1 bg-neutral-50">
                 <div className="flex items-center justify-between">
@@ -325,11 +314,11 @@ function PositionsPanel() {
                     {formatCurrency(pos.unrealized_pnl)}
                   </span>
                 </div>
-                <div>开仓价 {formatPrice(pos.entry_price)} → 最新价 {formatPrice(pos.current_price)}</div>
+                <div>开仓价 {formatPrice(pos.entry_price)} · 最新价 {formatPrice(pos.current_price)}</div>
                 <div>名义敞口 {formatCurrency(pos.notional_usd)}</div>
                 <div>
-                  退出计划：止盈 {profitTarget} / 止损 {stopLoss}
-                  <span className="block text-neutral-500">失效条件：{invalidation}</span>
+                  退出计划：止盈 {exitPlan.profit_target ?? "—"} / 止损 {exitPlan.stop_loss ?? "—"}
+                  <span className="block text-neutral-500">失效条件：{exitPlan.invalidation_condition ?? exitPlan.invalidation ?? "—"}</span>
                 </div>
               </div>
             );
@@ -340,7 +329,6 @@ function PositionsPanel() {
   );
 }
 
-// ProposalPanel 用于批量提交交易申请，调用 /api/proposals/apply。
 function ProposalPanel() {
   const { data } = useSWR("/api/proposals/assets", fetcher, { suspense: false });
   const assets = data?.assets ?? [];
@@ -448,7 +436,7 @@ function ProposalPanel() {
         className="rounded bg-neutral-900 px-3 py-2 text-xs font-semibold text-white hover:bg-neutral-700 disabled:opacity-50"
         disabled={submitting}
       >
-        {submitting ? "提交中…" : "申请交易"}
+        {submitting ? "提交中..." : "提交所选申请"}
       </button>
     </div>
   );
@@ -457,40 +445,32 @@ function ProposalPanel() {
 export default function RightFeed() {
   const [activeTab, setActiveTab] = useState("completed");
 
-  const panel = useMemo(() => {
-    switch (activeTab) {
-      case "decision":
-        return <DecisionPanel />;
-      case "modelchat":
-        return <ModelChatPanel />;
-      case "positions":
-        return <PositionsPanel />;
-      case "proposal":
-        return <ProposalPanel />;
-      default:
-        return <CompletedPanel />;
-    }
-  }, [activeTab]);
-
   return (
-    <aside className="flex h-full flex-col overflow-hidden rounded border border-neutral-200 bg-white px-4 py-3 shadow-sm">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">监控面板</h3>
-      </div>
-      <div className="mt-3 flex w-full gap-0 text-[11px]">
-        {TAB_CONFIG.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`flex-1 border border-neutral-200 px-2 py-1.5 transition ${activeTab === tab.key ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+    <aside className="flex h-full flex-col border-l border-neutral-200 bg-neutral-50">
+      <div className="flex-shrink-0 border-b border-neutral-200">
+        <div className="flex">
+          {TAB_CONFIG.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                activeTab === tab.key
+                  ? "bg-white text-neutral-900"
+                  : "text-neutral-500 hover:text-neutral-800"
               }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="relative mt-3 flex-1 overflow-hidden">
-        <div className="h-full flex-1 overflow-y-auto pr-1 space-y-3">{panel}</div>
+
+      <div className="flex-1 overflow-y-auto px-3 py-4">
+        {activeTab === "completed" && <CompletedPanel />}
+        {activeTab === "decision" && <DecisionPanel />}
+        {activeTab === "modelchat" && <ModelChatPanel />}
+        {activeTab === "positions" && <PositionsPanel />}
+        {activeTab === "proposal" && <ProposalPanel />}
       </div>
     </aside>
   );

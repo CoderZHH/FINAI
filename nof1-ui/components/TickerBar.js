@@ -39,16 +39,21 @@ function TickerItem({ symbol, price }) {
 }
 
 export default function TickerBar() {
-  const { data } = useSWR("/api/market/prices", fetcher, { suspense: false, refreshInterval: 5000 });
-  const items = data?.order || ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
-  const prices = data?.prices || {};
+  const { data } = useSWR("/api/ticker", fetcher, { suspense: false, refreshInterval: 5000 });
+  const tickers = data?.tickers ?? [];
+  const fallback = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
+
+  const entries =
+    tickers.length > 0
+      ? tickers.map((item) => ({ symbol: item.symbol, price: item.price }))
+      : fallback.map((symbol) => ({ symbol, price: 0 }));
 
   return (
     <div className="border-b bg-white">
       <div className="mx-auto max-w-[1920px] px-4">
         <div className="flex gap-6 overflow-x-auto py-2">
-          {items.map((s) => (
-            <TickerItem key={s} symbol={s} price={prices[s]?.price ?? 0} />
+          {entries.map((item) => (
+            <TickerItem key={item.symbol} symbol={item.symbol} price={item.price ?? 0} />
           ))}
         </div>
       </div>
