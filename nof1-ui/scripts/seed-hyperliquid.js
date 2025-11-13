@@ -98,6 +98,12 @@ const alignTo = (value, intervalMs) => Math.floor(value / intervalMs) * interval
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const ensurePerpSymbol = (symbol) => {
+  if (!symbol) return symbol;
+  const upper = symbol.toUpperCase();
+  return upper.endsWith("USDT") ? upper : `${upper}USDT`;
+};
+
 function resolveTimeRange() {
   const rawEnd = END_ISO ? toMs(END_ISO) : Date.now();
   if (!Number.isFinite(rawEnd)) throw new Error(`非法的结束时间：${END_ISO}`);
@@ -352,7 +358,7 @@ function decorateIndicators(interval, candles) {
 /** ============================ 数据入库结构 ============================ */
 function buildHistoryRow(symbol, timeframe, candle) {
   return {
-    symbol,
+    symbol: ensurePerpSymbol(symbol),
     timeframe,
     ts: candle.ts,
     price_mid: candle.priceMid,
@@ -384,7 +390,7 @@ function buildLatestRow(symbol, minuteSeries, htfSeries) {
   const lowPrice = Math.min(...minuteSeries.map((row) => row.low));
 
   return {
-    symbol,
+    symbol: ensurePerpSymbol(symbol),
     price: latest.close,
     change_percent: first?.close ? ((latest.close - first.close) / first.close) * 100 : null,
     high_price: highPrice,
@@ -485,7 +491,7 @@ async function handleSymbol({
   enrichCandlesWithMeta(higherCandles, openInterestSeries, fundingSeries, 10);
 
   await persistSymbolData({
-    symbol: promptSymbol,
+    symbol: binanceSymbol,
     minuteCandles,
     higherCandles,
     insertMarketPriceSnapshot,
@@ -503,7 +509,8 @@ async function handleSymbol({
 
 /** ============================ 提示词输出 ============================ */
 async function loadPromptData(pool, symbol) {
-  const latest = await pool.query(`SELECT * FROM market_prices WHERE symbol = $1`, [symbol]);
+  const storageSymbol = ensurePerpSymbol(symbol);
+  const latest = await pool.query(`SELECT * FROM market_prices WHERE symbol = $1`, [storageSymbol]);
   const minuteRows = await pool.query(
     `
       SELECT ts, price_mid, ema20, macd, rsi_7, rsi_14, open_interest, open_interest_avg, funding_rate, volume, volume_avg
@@ -511,7 +518,7 @@ async function loadPromptData(pool, symbol) {
       WHERE symbol = $1 AND timeframe = $2
       ORDER BY ts ASC
     `,
-    [symbol, TIMEFRAME_MIN]
+    [storageSymbol, TIMEFRAME_MIN]
   );
   const htfRows = await pool.query(
     `
@@ -520,7 +527,7 @@ async function loadPromptData(pool, symbol) {
       WHERE symbol = $1 AND timeframe = $2
       ORDER BY ts ASC
     `,
-    [symbol, TIMEFRAME_HTF]
+    [storageSymbol, TIMEFRAME_HTF]
   );
 
   return {
@@ -592,7 +599,9 @@ async function main() {
     }
 
     for (const symbol of SYMBOLS) {
-      const { snapshot, minuteSeries, htfSeries } = await loadPromptData(pool, symbol);
+      const binanceSymbol = BINANCE_SYMBOL_MAP[symbol];
+      if (!binanceSymbol) continue;
+      const { snapshot, minuteSeries, htfSeries } = await loadPromptData(pool, binanceSymbol);
       printPrompt(symbol, snapshot, minuteSeries, htfSeries);
     }
   } finally {

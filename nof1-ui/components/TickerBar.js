@@ -1,59 +1,132 @@
 "use client";
 
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import CoinBadge from "./CoinBadge";
 
-// TODO: 替换为真实行情接口或 WebSocket 推送
-const fetcher = (url) => fetch(url).then((r) => r.json());
+const fetcher = (url) => fetch(url).then((response) => response.json());
+const DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
 
-const COLORS = {
-  BTC: "#f7931a",
-  ETH: "#627eea",
-  SOL: "#9945FF",
-  BNB: "#f3ba2f",
-  DOGE: "#c2a633",
-  XRP: "#23292f",
-};
+const formatPrice = new Intl.NumberFormat("zh-CN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 
-// 目前使用首字母圆形标签，后续可替换为真实币种 SVG 图标
-function CoinIcon({ symbol }) {
-  const color = COLORS[symbol] || "#999";
-  return (
-    <span
-      aria-hidden
-      className="inline-flex items-center justify-center rounded-full text-[10px] font-bold"
-      style={{ width: 16, height: 16, background: color, color: "white" }}
-    >
-      {symbol[0]}
-    </span>
-  );
+function useAnimatedNumber(value, duration = 600) {
+  const [displayValue, setDisplayValue] = useState(value);
+  const rafRef = useRef();
+  const previousRef = useRef(value);
+
+  useEffect(() => {
+    const startValue = previousRef.current;
+    const delta = value - startValue;
+    const startTime = performance.now();
+
+    cancelAnimationFrame(rafRef.current);
+
+    const tick = (now) => {
+      const progress = Math.min(1, (now - startTime) / duration);
+      setDisplayValue(startValue + delta * progress);
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        previousRef.current = value;
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [value, duration]);
+
+  return displayValue;
+}
+
+function usePricePulse(value) {
+  const previous = useRef(value);
+  const [state, setState] = useState(null);
+
+  useEffect(() => {
+    if (previous.current === value) return;
+    const direction = value > previous.current ? "up" : "down";
+    previous.current = value;
+    setState(direction);
+    const timer = setTimeout(() => setState(null), 600);
+    return () => clearTimeout(timer);
+  }, [value]);
+
+  return state;
 }
 
 function TickerItem({ symbol, price }) {
+  const numericPrice = Number(price) || 0;
+  const animatedPrice = useAnimatedNumber(numericPrice);
+  const pulse = usePricePulse(numericPrice);
+  const priceColor =
+    pulse === "up" ? "text-emerald-600" : pulse === "down" ? "text-rose-600" : "text-neutral-600";
+  const backgroundColor =
+    pulse === "up"
+      ? "rgba(16, 185, 129, 0.12)"
+      : pulse === "down"
+      ? "rgba(248, 113, 113, 0.12)"
+      : "rgba(255, 255, 255, 0.75)";
+  const borderColor =
+    pulse === "up"
+      ? "rgba(16, 185, 129, 0.4)"
+      : pulse === "down"
+      ? "rgba(248, 113, 113, 0.4)"
+      : "rgba(226, 232, 240, 0.9)";
+  const shadowColor =
+    pulse === "up"
+      ? "rgba(16, 185, 129, 0.35)"
+      : pulse === "down"
+      ? "rgba(248, 113, 113, 0.35)"
+      : "rgba(15, 23, 42, 0.2)";
+
   return (
-    <div className="flex items-center gap-2 whitespace-nowrap">
-      <CoinIcon symbol={symbol} />
-      <span className="font-semibold text-xs">{symbol}</span>
-      <span className="text-xs text-neutral-600">${price.toLocaleString()}</span>
+    <div
+      className="flex items-center gap-3 rounded-2xl border px-3 py-2.5 text-xs font-semibold shadow-sm transition-all duration-300"
+      style={{
+        backgroundColor,
+        borderColor,
+        boxShadow: `0 8px 16px -12px ${shadowColor}`,
+      }}
+    >
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
+        <CoinBadge symbol={symbol} size={24} />
+      </div>
+      <div className="flex flex-col gap-0.5">
+        <span className="text-[11px] font-medium text-neutral-500">{symbol}/USDT</span>
+        <span
+          className={`font-mono text-sm font-semibold transition duration-300 ${priceColor}`}
+          aria-live="polite"
+        >
+          US${formatPrice.format(animatedPrice)}
+        </span>
+      </div>
     </div>
   );
 }
 
 export default function TickerBar() {
-  const { data } = useSWR("/api/ticker", fetcher, { suspense: false, refreshInterval: 5000 });
+  const { data } = useSWR("/api/ticker", fetcher, { refreshInterval: 5000 });
   const tickers = data?.tickers ?? [];
-  const fallback = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
 
-  const entries =
-    tickers.length > 0
-      ? tickers.map((item) => ({ symbol: item.symbol, price: item.price }))
-      : fallback.map((symbol) => ({ symbol, price: 0 }));
+  const entries = useMemo(() => {
+    if (tickers.length) {
+      return tickers.map((item) => ({
+        symbol: item.symbol,
+        price: Number(item.price) || 0,
+      }));
+    }
+    return DEFAULT_SYMBOLS.map((symbol) => ({ symbol, price: 0 }));
+  }, [tickers]);
 
   return (
-    <div className="border-b bg-white">
+    <div className="border-b bg-white/80 backdrop-blur">
       <div className="mx-auto max-w-[1920px] px-4">
-        <div className="flex gap-6 overflow-x-auto py-2">
+        <div className="flex gap-2 overflow-x-auto py-2">
           {entries.map((item) => (
-            <TickerItem key={item.symbol} symbol={item.symbol} price={item.price ?? 0} />
+            <TickerItem key={item.symbol} symbol={item.symbol} price={item.price} />
           ))}
         </div>
       </div>

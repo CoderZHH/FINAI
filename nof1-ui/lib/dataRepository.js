@@ -17,10 +17,40 @@ const DEFAULT_SYMBOLS = (() => {
 })();
 
 const NORMALIZED_SYMBOLS = DEFAULT_SYMBOLS.map(normalizeSymbol);
+const BASELINE_MODEL_ID = "btc_benchmark";
+let promptTemplateSchemaEnsured = false;
+
+const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
 function normalizeSymbol(symbol) {
   if (!symbol) return symbol;
   return symbol.replace(/USDT$/i, "");
+}
+
+function ensureMarketSymbol(symbol) {
+  if (!symbol) return symbol;
+  const upper = String(symbol).toUpperCase();
+  return upper.endsWith("USDT") ? upper : `${upper}USDT`;
+}
+
+async function ensurePromptTemplateSchema() {
+  if (promptTemplateSchemaEnsured) return;
+  const pool = getPool();
+  try {
+    await pool.query(`
+      ALTER TABLE IF EXISTS prompt_templates
+        ADD COLUMN IF NOT EXISTS sample_market_state_text TEXT,
+        ADD COLUMN IF NOT EXISTS sample_position_state_text TEXT
+    `);
+    promptTemplateSchemaEnsured = true;
+  } catch (error) {
+    console.error("[dataRepository] ensurePromptTemplateSchema failed", error);
+    throw error;
+  }
+}
+
+export function getTrackedSymbols() {
+  return [...NORMALIZED_SYMBOLS];
 }
 
 function toNumber(value, fallback = 0) {
@@ -120,6 +150,25 @@ function hydrateTickerFromDb(row) {
 
 function mapModelRow(row, { includeSecrets = true } = {}) {
   const apiKey = row.api_key ?? "";
+  const startingEquity =
+    row.account_starting_equity != null ? toNumber(row.account_starting_equity) : null;
+  const latestEquity =
+    row.account_latest_equity != null ? toNumber(row.account_latest_equity) : null;
+  const availableCash =
+    row.account_available_cash != null ? toNumber(row.account_available_cash) : null;
+  const totalUnrealized =
+    row.account_total_unrealized_pnl != null ? toNumber(row.account_total_unrealized_pnl) : null;
+  const template =
+    row.prompt_template_id != null
+      ? {
+          id: row.prompt_template_id,
+          name: row.prompt_template_name ?? null,
+          placeholder_tokens: row.prompt_template_tokens ?? [],
+          is_default: Boolean(row.prompt_template_is_default),
+          sample_market_state_text: row.prompt_template_sample_market_state ?? null,
+          sample_position_state_text: row.prompt_template_sample_position ?? null,
+        }
+      : null;
   return {
     model_id: row.model_id,
     display_name: row.display_name ?? row.model_id,
@@ -129,9 +178,57 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     system_prompt: row.system_prompt ?? "",
     user_prompt: row.user_prompt ?? "",
     human_review_required: Boolean(row.human_review_required ?? false),
+    prompt_template_id: row.prompt_template_id ?? null,
+    prompt_template: template,
+    auto_run_enabled: Boolean(row.auto_run_enabled ?? false),
+    auto_run_interval_minutes: row.auto_run_interval_minutes
+      ? Number(row.auto_run_interval_minutes)
+      : 5,
+    last_auto_run_at: row.last_auto_run_at ? safeTimestamp(row.last_auto_run_at) : null,
+    next_auto_run_at: row.next_auto_run_at ? safeTimestamp(row.next_auto_run_at) : null,
+    created_at: row.created_at ? safeTimestamp(row.created_at) : null,
+    updated_at: row.updated_at ? safeTimestamp(row.updated_at) : null,
+    starting_equity: startingEquity,
+    latest_equity: latestEquity,
+    available_cash: availableCash,
+    total_unrealized_pnl: totalUnrealized,
+  };
+}
+
+function mapPromptTemplateRow(row, options = {}) {
+  const includeContent = options.includeContent !== false;
+  const base = {
+    id: row.id,
+    template_name: row.template_name,
+    description: row.description ?? "",
+    placeholder_tokens: row.placeholder_tokens ?? [],
+    sample_market_state_text: row.sample_market_state_text ?? "",
+    sample_position_state_text: row.sample_position_state_text ?? "",
+    is_default: Boolean(row.is_default),
     created_at: row.created_at ? safeTimestamp(row.created_at) : null,
     updated_at: row.updated_at ? safeTimestamp(row.updated_at) : null,
   };
+  if (includeContent) {
+    base.system_prompt = row.system_prompt ?? "";
+    base.user_prompt = row.user_prompt ?? "";
+  }
+  return base;
+}
+
+function extractPlaceholderTokensFromText(...payloads) {
+  const tokens = new Set();
+  payloads
+    .filter((text) => typeof text === "string" && text.length)
+    .forEach((text) => {
+      PLACEHOLDER_REGEX.lastIndex = 0;
+      let match = PLACEHOLDER_REGEX.exec(text);
+      while (match) {
+        tokens.add(match[1]);
+        match = PLACEHOLDER_REGEX.exec(text);
+      }
+    });
+  PLACEHOLDER_REGEX.lastIndex = 0;
+  return Array.from(tokens);
 }
 
 function mapAccountRow(row) {
@@ -206,6 +303,85 @@ export async function getTickerRows() {
   });
 }
 
+export async function updateBtcBenchmark() {
+  const pool = getPool();
+  const modelId = BASELINE_MODEL_ID;
+
+  try {
+    const positionResult = await pool.query(
+      `SELECT * FROM agent_positions_runtime WHERE model_id = $1 AND symbol = $2`,
+      [modelId, "BTCUSDT"]
+    );
+
+    if (!positionResult.rows.length) {
+      return null;
+    }
+
+    const position = positionResult.rows[0];
+    const entryPrice = Number(position.entry_price ?? 0);
+    const quantity = Number(position.quantity ?? 0);
+
+    const priceResult = await pool.query(
+      `SELECT price FROM market_prices WHERE symbol = $1`,
+      ["BTCUSDT"]
+    );
+    const currentPrice = toNumber(priceResult.rows[0]?.price ?? entryPrice);
+
+    const currentNotional = currentPrice * quantity;
+    const unrealizedPnl = currentNotional - entryPrice * quantity;
+    const equity = currentNotional;
+
+    await pool.query(
+      `
+      UPDATE agent_positions_runtime
+      SET current_price = $1,
+          notional = $2,
+          unrealized_pnl = $3,
+          updated_at = now()
+      WHERE model_id = $4 AND symbol = $5
+      `,
+      [currentPrice, currentNotional, unrealizedPnl, modelId, "BTCUSDT"]
+    );
+
+    await pool.query(
+      `
+      UPDATE agent_accounts_runtime
+      SET latest_equity = $1,
+          total_unrealized_pnl = $2,
+          updated_at = now()
+      WHERE model_id = $3
+      `,
+      [equity, unrealizedPnl, modelId]
+    );
+
+    await appendAccountTimeseries({
+      modelId,
+      ts: new Date(),
+      equity,
+      cash_available: 0,
+      unrealized_pnl: unrealizedPnl,
+      realized_pnl: 0,
+      sharpe: 0,
+      win_rate: 0,
+    });
+
+    return {
+      modelId,
+      currentPrice,
+      quantity,
+      equity,
+      unrealizedPnl,
+      returnPercent:
+        entryPrice && quantity
+          ? ((equity / (entryPrice * quantity)) - 1) * 100
+          : 0,
+    };
+  } catch (error) {
+    console.error("BTC benchmark update failed:", error);
+    throw error;
+  }
+}
+
 export async function insertMarketPriceSnapshot(snapshot) {
   const pool = getPool();
   const {
@@ -232,6 +408,7 @@ export async function insertMarketPriceSnapshot(snapshot) {
   if (!symbol || !timeframe || !ts) {
     throw new Error("symbol, timeframe and ts are required for market_price_history snapshot.");
   }
+  const storageSymbol = ensureMarketSymbol(symbol);
 
   await pool.query(
     `
@@ -244,7 +421,7 @@ export async function insertMarketPriceSnapshot(snapshot) {
     ON CONFLICT (symbol, timeframe, ts) DO NOTHING
     `,
     [
-      symbol,
+      storageSymbol,
       timeframe,
       new Date(ts),
       price_mid != null ? toNumber(price_mid) : null,
@@ -297,6 +474,7 @@ export async function upsertMarketPrice(row) {
   if (!symbol) {
     throw new Error("symbol is required to upsert market price.");
   }
+  const storageSymbol = ensureMarketSymbol(symbol);
 
   await pool.query(
     `
@@ -318,27 +496,27 @@ export async function upsertMarketPrice(row) {
       high_price = EXCLUDED.high_price,
       low_price = EXCLUDED.low_price,
       volume = EXCLUDED.volume,
-      volume_avg = EXCLUDED.volume_avg,
-      ema20 = EXCLUDED.ema20,
-      ema50 = EXCLUDED.ema50,
-      macd = EXCLUDED.macd,
-      rsi_7 = EXCLUDED.rsi_7,
-      rsi_14 = EXCLUDED.rsi_14,
-      open_interest = EXCLUDED.open_interest,
-      open_interest_avg = EXCLUDED.open_interest_avg,
-      funding_rate = EXCLUDED.funding_rate,
-      atr_3 = EXCLUDED.atr_3,
-      atr_14 = EXCLUDED.atr_14,
-      ema20_htf = EXCLUDED.ema20_htf,
-      ema50_htf = EXCLUDED.ema50_htf,
-      macd_htf = EXCLUDED.macd_htf,
-      rsi_14_htf = EXCLUDED.rsi_14_htf,
+      volume_avg = COALESCE(EXCLUDED.volume_avg, market_prices.volume_avg),
+      ema20 = COALESCE(EXCLUDED.ema20, market_prices.ema20),
+      ema50 = COALESCE(EXCLUDED.ema50, market_prices.ema50),
+      macd = COALESCE(EXCLUDED.macd, market_prices.macd),
+      rsi_7 = COALESCE(EXCLUDED.rsi_7, market_prices.rsi_7),
+      rsi_14 = COALESCE(EXCLUDED.rsi_14, market_prices.rsi_14),
+      open_interest = COALESCE(EXCLUDED.open_interest, market_prices.open_interest),
+      open_interest_avg = COALESCE(EXCLUDED.open_interest_avg, market_prices.open_interest_avg),
+      funding_rate = COALESCE(EXCLUDED.funding_rate, market_prices.funding_rate),
+      atr_3 = COALESCE(EXCLUDED.atr_3, market_prices.atr_3),
+      atr_14 = COALESCE(EXCLUDED.atr_14, market_prices.atr_14),
+      ema20_htf = COALESCE(EXCLUDED.ema20_htf, market_prices.ema20_htf),
+      ema50_htf = COALESCE(EXCLUDED.ema50_htf, market_prices.ema50_htf),
+      macd_htf = COALESCE(EXCLUDED.macd_htf, market_prices.macd_htf),
+      rsi_14_htf = COALESCE(EXCLUDED.rsi_14_htf, market_prices.rsi_14_htf),
       last_update_ts = EXCLUDED.last_update_ts,
       raw_payload = EXCLUDED.raw_payload,
       updated_at = now()
     `,
     [
-      symbol,
+      storageSymbol,
       price != null ? toNumber(price) : null,
       change_percent != null ? toNumber(change_percent) : null,
       high_price != null ? toNumber(high_price) : null,
@@ -368,8 +546,9 @@ export async function upsertMarketPrice(row) {
 export async function getMarketSeries(symbol, timeframe, options = {}) {
   const pool = getPool();
   const { from, to, limit = 500 } = options ?? {};
+  const storageSymbol = ensureMarketSymbol(symbol);
   const filters = ["symbol = $1", "timeframe = $2"];
-  const params = [symbol, timeframe];
+  const params = [storageSymbol, timeframe];
   let idx = params.length + 1;
 
   if (from) {
@@ -436,19 +615,23 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
 export async function listAgentModels(options = {}) {
   const { includeDisabled = true, includeSecrets = true } = options;
   const pool = getPool();
+  await ensurePromptTemplateSchema();
   const { rows } = await pool.query(
     `
     SELECT
-      m.model_id,
-      m.display_name,
-      m.api_base_url,
-      m.api_key,
-      m.system_prompt,
-      m.user_prompt,
-      m.human_review_required,
-      m.created_at,
-      m.updated_at
+      m.*,
+      a.starting_equity AS account_starting_equity,
+      a.latest_equity AS account_latest_equity,
+      a.available_cash AS account_available_cash,
+      a.total_unrealized_pnl AS account_total_unrealized_pnl,
+      t.template_name AS prompt_template_name,
+      t.placeholder_tokens AS prompt_template_tokens,
+      t.is_default AS prompt_template_is_default,
+      t.sample_market_state_text AS prompt_template_sample_market_state,
+      t.sample_position_state_text AS prompt_template_sample_position
     FROM agent_models m
+    LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
+    LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
     ORDER BY m.display_name, m.model_id
     `
   );
@@ -458,25 +641,44 @@ export async function listAgentModels(options = {}) {
 
 export async function getAgentModelById(modelId, { includeSecrets = true } = {}) {
   const pool = getPool();
+  await ensurePromptTemplateSchema();
   const { rows } = await pool.query(
     `
     SELECT
-      model_id,
-      display_name,
-      api_base_url,
-      api_key,
-      human_review_required,
-      system_prompt,
-      user_prompt,
-      created_at,
-      updated_at
-    FROM agent_models
-    WHERE model_id = $1
+      m.*,
+      a.starting_equity AS account_starting_equity,
+      a.latest_equity AS account_latest_equity,
+      a.available_cash AS account_available_cash,
+      a.total_unrealized_pnl AS account_total_unrealized_pnl,
+      t.template_name AS prompt_template_name,
+      t.placeholder_tokens AS prompt_template_tokens,
+      t.is_default AS prompt_template_is_default,
+      t.sample_market_state_text AS prompt_template_sample_market_state,
+      t.sample_position_state_text AS prompt_template_sample_position
+    FROM agent_models m
+    LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
+    LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
+    WHERE m.model_id = $1
     `,
     [modelId]
   );
   if (!rows.length) return null;
   return mapModelRow(rows[0], { includeSecrets });
+}
+
+async function resolvePromptTemplate(templateId) {
+  if (templateId) {
+    const template = await getPromptTemplateById(templateId);
+    if (!template) {
+      throw new Error("指定的提示词模板不存在。");
+    }
+    return template;
+  }
+  const fallback = await getDefaultPromptTemplate();
+  if (!fallback) {
+    throw new Error("尚未配置默认提示词模板。");
+  }
+  return fallback;
 }
 
 export async function createAgentModel(payload) {
@@ -488,9 +690,22 @@ export async function createAgentModel(payload) {
     api_base_url,
     api_key,
     human_review_required = false,
-    system_prompt = "",
-    user_prompt = "",
+    system_prompt,
+    user_prompt,
+    prompt_template_id = null,
+    auto_run_enabled = false,
+    auto_run_interval_minutes = 5,
   } = payload;
+
+  const template = await resolvePromptTemplate(prompt_template_id);
+
+  const systemPromptValue =
+    typeof system_prompt === "string" ? system_prompt : template.system_prompt ?? "";
+  const userPromptValue =
+    typeof user_prompt === "string" ? user_prompt : template.user_prompt ?? "";
+  const sanitizedInterval = Number.isFinite(Number(auto_run_interval_minutes))
+    ? Math.max(1, Number(auto_run_interval_minutes))
+    : 5;
 
   const { rows } = await pool.query(
     `
@@ -501,9 +716,12 @@ export async function createAgentModel(payload) {
       api_key,
       human_review_required,
       system_prompt,
-      user_prompt
+      user_prompt,
+      prompt_template_id,
+      auto_run_enabled,
+      auto_run_interval_minutes
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     RETURNING *
     `,
     [
@@ -512,8 +730,11 @@ export async function createAgentModel(payload) {
       api_base_url ?? null,
       api_key ?? null,
       human_review_required,
-      system_prompt ?? "",
-      user_prompt ?? "",
+      systemPromptValue,
+      userPromptValue,
+      template.id ?? null,
+      Boolean(auto_run_enabled),
+      sanitizedInterval,
     ]
   );
 
@@ -529,16 +750,54 @@ export async function updateAgentModel(modelId, updates) {
     system_prompt: "system_prompt",
     user_prompt: "user_prompt",
     human_review_required: "human_review_required",
+    prompt_template_id: "prompt_template_id",
+    auto_run_enabled: "auto_run_enabled",
+    auto_run_interval_minutes: "auto_run_interval_minutes",
+    last_auto_run_at: "last_auto_run_at",
+    next_auto_run_at: "next_auto_run_at",
   };
+
+  const nextUpdates = { ...updates };
+
+  if (Object.prototype.hasOwnProperty.call(nextUpdates, "prompt_template_id")) {
+    if (nextUpdates.prompt_template_id) {
+      const template = await getPromptTemplateById(nextUpdates.prompt_template_id);
+      if (!template) {
+        throw new Error("指定的提示词模板不存在。");
+      }
+      nextUpdates.prompt_template_id = template.id;
+      if (!Object.prototype.hasOwnProperty.call(nextUpdates, "system_prompt")) {
+        nextUpdates.system_prompt = template.system_prompt;
+      }
+      if (!Object.prototype.hasOwnProperty.call(nextUpdates, "user_prompt")) {
+        nextUpdates.user_prompt = template.user_prompt;
+      }
+    } else {
+      nextUpdates.prompt_template_id = null;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(nextUpdates, "auto_run_enabled")) {
+    nextUpdates.auto_run_enabled = Boolean(nextUpdates.auto_run_enabled);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(nextUpdates, "auto_run_interval_minutes")) {
+    const parsed = Number(nextUpdates.auto_run_interval_minutes);
+    nextUpdates.auto_run_interval_minutes =
+      Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.round(parsed)) : 5;
+  }
 
   const fields = [];
   const values = [];
   let idx = 1;
 
-  Object.entries(updates).forEach(([key, value]) => {
+  Object.entries(nextUpdates).forEach(([key, value]) => {
     const column = allowed[key];
     if (!column) return;
     let transformed = value;
+    if (column === "last_auto_run_at" || column === "next_auto_run_at") {
+      transformed = value ? new Date(value) : null;
+    }
     fields.push(`${column} = $${idx}`);
     values.push(transformed);
     idx += 1;
@@ -588,6 +847,22 @@ export async function deleteAgentModel(modelId) {
   );
 }
 
+export async function markModelAutoRun(modelId, { lastRun = new Date(), intervalMinutes = 5 } = {}) {
+  const pool = getPool();
+  const last = lastRun ? new Date(lastRun) : new Date();
+  const interval = Number(intervalMinutes) || 5;
+  const next = new Date(last.getTime() + interval * 60 * 1000);
+  await pool.query(
+    `
+    UPDATE agent_models
+    SET last_auto_run_at = $2,
+        next_auto_run_at = $3
+    WHERE model_id = $1
+    `,
+    [modelId, last, next]
+  );
+}
+
 export async function getAgentAccounts() {
   const pool = getPool();
   const { rows } = await pool.query(
@@ -614,22 +889,299 @@ export async function getAgentAccounts() {
   return rows.map(mapAccountRow);
 }
 
-export async function getSinceInceptionValues() {
+export async function listPromptTemplates(options = {}) {
+  const { includeContent = true } = options;
+  const pool = getPool();
+  await ensurePromptTemplateSchema();
+  const { rows } = await pool.query(
+    `
+    SELECT *
+    FROM prompt_templates
+    ORDER BY template_name
+    `
+  );
+  return rows.map((row) => mapPromptTemplateRow(row, { includeContent }));
+}
+
+export async function getPromptTemplateById(templateId, options = {}) {
+  if (!templateId) return null;
+  const { includeContent = true } = options;
+  const pool = getPool();
+  await ensurePromptTemplateSchema();
+  const { rows } = await pool.query(
+    `
+    SELECT *
+    FROM prompt_templates
+    WHERE id = $1
+    `,
+    [templateId]
+  );
+  if (!rows.length) return null;
+  return mapPromptTemplateRow(rows[0], { includeContent });
+}
+
+export async function getDefaultPromptTemplate(options = {}) {
+  const { includeContent = true } = options;
   const pool = getPool();
   const { rows } = await pool.query(
     `
-    SELECT model_id, nav_since_inception, inception_date, num_invocations
-    FROM agent_since_inception
-    ORDER BY model_id
+    SELECT *
+    FROM prompt_templates
+    WHERE is_default = TRUE
+    ORDER BY updated_at DESC
+    LIMIT 1
     `
   );
+  if (rows.length) {
+    return mapPromptTemplateRow(rows[0], { includeContent });
+  }
+  const fallback = await pool.query(
+    `
+    SELECT *
+    FROM prompt_templates
+    ORDER BY updated_at DESC
+    LIMIT 1
+    `
+  );
+  if (!fallback.rows.length) return null;
+  return mapPromptTemplateRow(fallback.rows[0], { includeContent });
+}
 
+export async function createPromptTemplate(payload) {
+  const pool = getPool();
+  await ensurePromptTemplateSchema();
+  const {
+    template_name,
+    description = "",
+    system_prompt = "",
+    user_prompt = "",
+    placeholder_tokens,
+    sample_market_state_text = "",
+    sample_position_state_text = "",
+    is_default = false,
+  } = payload;
+
+  if (!template_name || !template_name.trim()) {
+    throw new Error("template_name 不能为空。");
+  }
+
+  const tokens =
+    Array.isArray(placeholder_tokens) && placeholder_tokens.length
+      ? [...new Set(placeholder_tokens)]
+      : extractPlaceholderTokensFromText(system_prompt, user_prompt);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (is_default) {
+      await client.query(`UPDATE prompt_templates SET is_default = FALSE WHERE is_default = TRUE`);
+    }
+    const { rows } = await client.query(
+      `
+      INSERT INTO prompt_templates (
+        template_name,
+        description,
+        system_prompt,
+        user_prompt,
+        placeholder_tokens,
+        sample_market_state_text,
+        sample_position_state_text,
+        is_default
+      )
+      VALUES ($1,$2,$3,$4,$5::text[],$6,$7,$8)
+      RETURNING *
+      `,
+      [
+        template_name.trim(),
+        description ?? "",
+        system_prompt,
+        user_prompt,
+        tokens,
+        sample_market_state_text || null,
+        sample_position_state_text || null,
+        Boolean(is_default),
+      ]
+    );
+    await client.query("COMMIT");
+    return mapPromptTemplateRow(rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updatePromptTemplate(templateId, updates) {
+  if (!templateId) {
+    throw new Error("templateId is required.");
+  }
+  const pool = getPool();
+  await ensurePromptTemplateSchema();
+  const existing = await getPromptTemplateById(templateId);
+  if (!existing) {
+    throw new Error("提示词模板不存在。");
+  }
+
+  const nextUpdates = { ...updates };
+  if (!("placeholder_tokens" in nextUpdates)) {
+    const nextSystem =
+      typeof nextUpdates.system_prompt === "string"
+        ? nextUpdates.system_prompt
+        : existing.system_prompt;
+    const nextUser =
+      typeof nextUpdates.user_prompt === "string" ? nextUpdates.user_prompt : existing.user_prompt;
+    nextUpdates.placeholder_tokens = extractPlaceholderTokensFromText(nextSystem, nextUser);
+  }
+
+  const allowed = {
+    template_name: "template_name",
+    description: "description",
+    system_prompt: "system_prompt",
+    user_prompt: "user_prompt",
+    placeholder_tokens: "placeholder_tokens",
+    sample_market_state_text: "sample_market_state_text",
+    sample_position_state_text: "sample_position_state_text",
+    is_default: "is_default",
+  };
+
+  const fields = [];
+  const values = [];
+  let idx = 1;
+
+  Object.entries(nextUpdates).forEach(([key, value]) => {
+    const column = allowed[key];
+    if (!column) return;
+    if (column === "template_name" && value && !value.trim()) {
+      return;
+    }
+    fields.push(`${column} = $${idx}`);
+    values.push(column === "template_name" ? value.trim() : value);
+    idx += 1;
+  });
+
+  if (!fields.length) {
+    return existing;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (nextUpdates.is_default === true) {
+      await client.query(
+        `UPDATE prompt_templates SET is_default = FALSE WHERE is_default = TRUE AND id <> $1`,
+        [templateId]
+      );
+    }
+    const { rows } = await client.query(
+      `
+      UPDATE prompt_templates
+      SET ${fields.join(", ")}, updated_at = now()
+      WHERE id = $${idx}
+      RETURNING *
+      `,
+      [...values, templateId]
+    );
+    await client.query("COMMIT");
+    if (!rows.length) {
+      throw new Error("更新提示词模板失败。");
+    }
+    return mapPromptTemplateRow(rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deletePromptTemplate(templateId) {
+  if (!templateId) {
+    throw new Error("templateId is required.");
+  }
+  const pool = getPool();
+  const template = await getPromptTemplateById(templateId);
+  if (!template) {
+    return false;
+  }
+  if (template.is_default) {
+    throw new Error("默认模板无法删除，请先取消默认状态。");
+  }
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS usage_count
+    FROM agent_models
+    WHERE prompt_template_id = $1
+    `,
+    [templateId]
+  );
+  if (rows[0].usage_count > 0) {
+    throw new Error("仍有模型正在使用该模板，无法删除。");
+  }
+  await pool.query(
+    `
+    DELETE FROM prompt_templates
+    WHERE id = $1
+    `,
+    [templateId]
+  );
+  return true;
+}
+
+export async function listPromptPlaceholders() {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT token, label, description, sample_value, category, created_at, updated_at
+    FROM prompt_placeholders
+    ORDER BY COALESCE(category, 'general'), token
+    `
+  );
   return rows.map((row) => ({
-    id: `${row.model_id}-inception`,
-    model_id: row.model_id,
-    nav_since_inception: toNumber(row.nav_since_inception ?? 10000),
-    inception_date: row.inception_date ? row.inception_date.getTime() : null,
-    num_invocations: Number(row.num_invocations ?? 0),
+    token: row.token,
+    label: row.label ?? row.token,
+    description: row.description ?? "",
+    sample_value: row.sample_value ?? "",
+    category: row.category ?? "general",
+    created_at: row.created_at ? safeTimestamp(row.created_at) : null,
+    updated_at: row.updated_at ? safeTimestamp(row.updated_at) : null,
+  }));
+}
+
+export async function getSinceInceptionValues() {
+  const pool = getPool();
+  const models = await listAgentModels({ includeDisabled: true, includeSecrets: false });
+  if (!models.length) return [];
+
+  const [{ rows: inceptionRows }, { rows: logRows }] = await Promise.all([
+    pool.query(
+      `
+      SELECT model_id, MIN(ts) AS inception_date
+      FROM agent_account_timeseries
+      GROUP BY model_id
+      `
+    ),
+    pool.query(
+      `
+      SELECT model_id, COUNT(*)::int AS num_invocations
+      FROM agent_logs
+      GROUP BY model_id
+      `
+    ),
+  ]);
+
+  const inceptionMap = new Map(
+    inceptionRows.map((row) => [row.model_id, row.inception_date ? row.inception_date.getTime() : null])
+  );
+  const logCountMap = new Map(logRows.map((row) => [row.model_id, Number(row.num_invocations ?? 0)]));
+
+  return models.map((model) => ({
+    id: `${model.model_id}-inception`,
+    model_id: model.model_id,
+    nav_since_inception: toNumber(model.latest_equity ?? model.starting_equity ?? 10000),
+    inception_date:
+      inceptionMap.get(model.model_id) ?? (model.created_at ? safeTimestamp(model.created_at) : null),
+    num_invocations: logCountMap.get(model.model_id) ?? 0,
   }));
 }
 
@@ -711,7 +1263,9 @@ export async function getPerformanceTimeseries() {
 
 export async function getPositionsSnapshot() {
   const pool = getPool();
-  const accounts = await getAgentAccounts();
+  const accounts = (await getAgentAccounts()).filter(
+    (account) => account.model_id !== BASELINE_MODEL_ID
+  );
   if (!accounts.length) return [];
 
   const modelIds = accounts.map((account) => account.model_id);
@@ -814,6 +1368,151 @@ export async function getPositionsSnapshot() {
   });
 }
 
+export async function markToMarketAllModels() {
+  const accounts = await getAgentAccounts();
+  if (!accounts.length) return { updated: [] };
+
+  const tradable = accounts.filter((account) => account.model_id !== "btc_benchmark");
+  if (!tradable.length) {
+    return { updated: [], snapshots: [] };
+  }
+
+  const modelIds = tradable.map((account) => account.model_id);
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT
+      id,
+      model_id,
+      symbol,
+      side,
+      leverage,
+      entry_price,
+      current_price,
+      quantity
+    FROM agent_positions_runtime
+    WHERE model_id = ANY($1::text[])
+    `,
+    [modelIds]
+  );
+
+  const marketSnapshot = await getMarketSnapshot();
+  const summaryByModel = new Map();
+
+  for (const row of rows) {
+    const normalizedSymbol = normalizeSymbol(row.symbol);
+    const ticker = marketSnapshot.prices[normalizedSymbol];
+    const lastPrice = ticker
+      ? toNumber(ticker.price)
+      : toNumber(row.current_price ?? row.entry_price ?? 0);
+    const entryPrice = toNumber(row.entry_price ?? lastPrice);
+    const quantity = toNumber(row.quantity ?? 0);
+    if (!quantity || !lastPrice) continue;
+
+    const leverage = Number(row.leverage ?? 1);
+    const side = String(row.side || "LONG").toUpperCase();
+    const direction = side === "SHORT" ? -1 : 1;
+    const notional = lastPrice * quantity * leverage;
+    const pnl = (lastPrice - entryPrice) * quantity * leverage * direction;
+
+    await pool.query(
+      `
+      UPDATE agent_positions_runtime
+      SET current_price = $1,
+          notional = $2,
+          unrealized_pnl = $3,
+          updated_at = now()
+      WHERE id = $4
+      `,
+      [lastPrice, notional, pnl, row.id]
+    );
+
+    if (!summaryByModel.has(row.model_id)) {
+      summaryByModel.set(row.model_id, { totalNotional: 0, totalUnrealized: 0 });
+    }
+    const summary = summaryByModel.get(row.model_id);
+    summary.totalNotional += notional;
+    summary.totalUnrealized += pnl;
+  }
+
+  const { rows: seriesRows } = await pool.query(
+    `
+    SELECT model_id, COUNT(*)::int AS count
+    FROM agent_account_timeseries
+    WHERE model_id = ANY($1::text[])
+    GROUP BY model_id
+    `,
+    [modelIds]
+  );
+  const seriesCountMap = new Map(
+    seriesRows.map((row) => [row.model_id, Number(row.count ?? 0)])
+  );
+
+  const updatedModels = [];
+  const equitySnapshots = [];
+  const now = new Date();
+
+  for (const account of tradable) {
+    const summary =
+      summaryByModel.get(account.model_id) ?? {
+        totalNotional: 0,
+        totalUnrealized: 0,
+      };
+    const cashBalance = toNumber(
+      account.available_cash ??
+        account.latest_equity ??
+        account.starting_equity ??
+        10000
+    );
+    const latestEquity = cashBalance + summary.totalUnrealized;
+    const previousEquity = toNumber(account.latest_equity ?? cashBalance);
+    const previousUnrealized = toNumber(account.total_unrealized_pnl ?? 0);
+    const hasSeries = (seriesCountMap.get(account.model_id) ?? 0) > 0;
+    const equityChanged =
+      !hasSeries ||
+      Math.abs(latestEquity - previousEquity) > 0.01 ||
+      Math.abs(summary.totalUnrealized - previousUnrealized) > 0.01;
+
+    await upsertRuntimeAccount(account.model_id, {
+      starting_equity: account.starting_equity,
+      latest_equity: latestEquity,
+      available_cash: cashBalance,
+      total_unrealized_pnl: summary.totalUnrealized,
+      trade_count: account.total_trades ?? 0,
+      sharpe_ratio: account.sharpe_ratio,
+      win_rate: account.win_rate,
+    });
+
+    equitySnapshots.push({
+      model_id: account.model_id,
+      latest_equity: latestEquity,
+      cash_available: cashBalance,
+      total_unrealized_pnl: summary.totalUnrealized,
+      timestamp: now.getTime(),
+    });
+
+    if (equityChanged) {
+      await appendAccountTimeseries({
+        modelId: account.model_id,
+        ts: now,
+        equity: latestEquity,
+        cash_available: cashBalance,
+        unrealized_pnl: summary.totalUnrealized,
+        realized_pnl: null,
+        sharpe: account.sharpe_ratio,
+        win_rate: account.win_rate,
+      });
+      updatedModels.push(account.model_id);
+      seriesCountMap.set(
+        account.model_id,
+        (seriesCountMap.get(account.model_id) ?? 0) + 1
+      );
+    }
+  }
+
+  return { updated: updatedModels, snapshots: equitySnapshots };
+}
+
 export async function getAgentLogs(limit = 20) {
   const pool = getPool();
   const { rows } = await pool.query(
@@ -840,36 +1539,44 @@ export async function getAgentLogs(limit = 20) {
 
 export async function getRecentTrades(limit = 20) {
   const pool = getPool();
-  const { rows } = await pool.query(
-    `
-    SELECT id, model_id, symbol, side, leverage, quantity, entry_price, exit_price,
-           entry_time, exit_time, holding_time, realized_net_pnl, decision_source,
-           exit_plan
-    FROM trades
-    ORDER BY entry_time DESC NULLS LAST, id DESC
-    LIMIT $1
-    `,
-    [limit]
-  );
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, model_id, symbol, side, leverage, quantity, entry_price, exit_price,
+             entry_time, exit_time, holding_time, realized_net_pnl, decision_source,
+             exit_plan
+      FROM trades
+      ORDER BY entry_time DESC NULLS LAST, id DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
 
-  return rows.map((row) => ({
-    id: row.id,
-    model_id: row.model_id,
-    symbol: row.symbol,
-    side: row.side,
-    leverage: toNumber(row.leverage ?? 0),
-    quantity: toNumber(row.quantity ?? 0),
-    entry_price: toNumber(row.entry_price ?? 0),
-    exit_price: toNumber(row.exit_price ?? 0),
-    entry_time: row.entry_time ? row.entry_time.getTime() : null,
-    exit_time: row.exit_time ? row.exit_time.getTime() : null,
-    entry_human_time: row.entry_time?.toISOString().replace("T", " ").replace("Z", ""),
-    exit_human_time: row.exit_time?.toISOString().replace("T", " ").replace("Z", ""),
-    holding_time: row.holding_time,
-    realized_net_pnl: toNumber(row.realized_net_pnl ?? 0),
-    decision_source: row.decision_source,
-    exit_plan: row.exit_plan ?? {},
-  }));
+    return rows.map((row) => ({
+      id: row.id,
+      model_id: row.model_id,
+      symbol: row.symbol,
+      side: row.side,
+      leverage: toNumber(row.leverage ?? 0),
+      quantity: toNumber(row.quantity ?? 0),
+      entry_price: toNumber(row.entry_price ?? 0),
+      exit_price: toNumber(row.exit_price ?? 0),
+      entry_time: row.entry_time ? row.entry_time.getTime() : null,
+      exit_time: row.exit_time ? row.exit_time.getTime() : null,
+      entry_human_time: row.entry_time?.toISOString().replace("T", " ").replace("Z", ""),
+      exit_human_time: row.exit_time?.toISOString().replace("T", " ").replace("Z", ""),
+      holding_time: row.holding_time,
+      realized_net_pnl: toNumber(row.realized_net_pnl ?? 0),
+      decision_source: row.decision_source,
+      exit_plan: row.exit_plan ?? {},
+    }));
+  } catch (error) {
+    if (error?.code === "42P01") {
+      console.warn("[dataRepository] trades表缺失，返回空列表。");
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function getTradesHistory({ page = 1, pageSize = 50, from, to }) {
@@ -1187,9 +1894,17 @@ export async function getRuntimePositions(modelId) {
       current_price,
       quantity,
       notional,
+      notional_usd,
       unrealized_pnl,
       take_profit,
       stop_loss,
+      liquidation_price,
+      sl_oid,
+      tp_oid,
+      entry_oid,
+      confidence,
+      risk_usd,
+      wait_for_fill,
       holding_seconds,
       exit_plan,
       updated_at
@@ -1209,9 +1924,17 @@ export async function getRuntimePositions(modelId) {
     current_price: toNumber(row.current_price ?? 0),
     quantity: toNumber(row.quantity ?? 0),
     notional: toNumber(row.notional ?? 0),
+    notional_usd: row.notional_usd != null ? toNumber(row.notional_usd) : toNumber(row.notional ?? 0),
     unrealized_pnl: toNumber(row.unrealized_pnl ?? 0),
     take_profit: row.take_profit != null ? toNumber(row.take_profit) : null,
     stop_loss: row.stop_loss != null ? toNumber(row.stop_loss) : null,
+    liquidation_price: row.liquidation_price != null ? toNumber(row.liquidation_price) : null,
+    sl_oid: row.sl_oid ?? null,
+    tp_oid: row.tp_oid ?? null,
+    entry_oid: row.entry_oid ?? null,
+    confidence: row.confidence != null ? toNumber(row.confidence) : null,
+    risk_usd: row.risk_usd != null ? toNumber(row.risk_usd) : null,
+    wait_for_fill: Boolean(row.wait_for_fill ?? false),
     holding_seconds: Number(row.holding_seconds ?? 0),
     exit_plan: row.exit_plan ?? {},
     updated_at: safeTimestamp(row.updated_at),
@@ -1543,3 +2266,252 @@ export async function getModeState() {
 }
 
 export { normalizeSymbol, DEFAULT_SYMBOLS, NORMALIZED_SYMBOLS };
+
+export async function countAgentLogs(modelId) {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM agent_logs
+    WHERE model_id = $1
+    `,
+    [modelId]
+  );
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * �?Binance API 更新市场价格
+ * @returns {Promise<number>} 更新的交易对数量
+ */
+export async function updateMarketPricesFromBinance() {
+  const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'DOGEUSDT', 'XRPUSDT'];
+  const pool = getPool();
+  
+  try {
+    // 动态导�?node-fetch（避�?ESM 问题�?
+    const fetch = (await import('node-fetch')).default;
+    
+    // 批量获取所有交易对的行�?
+    const response = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+    if (!response.ok) {
+      throw new Error(`Binance API error: ${response.status}`);
+    }
+    
+    const allTickers = await response.json();
+    const tickerMap = {};
+    
+    // 构建映射�?
+    allTickers.forEach(ticker => {
+      if (symbols.includes(ticker.symbol)) {
+        tickerMap[ticker.symbol] = ticker;
+      }
+    });
+    
+    // 更新数据�?
+    let updated = 0;
+    for (const symbol of symbols) {
+      const ticker = tickerMap[symbol];
+      if (!ticker) continue;
+      
+      await pool.query(
+        `
+        INSERT INTO market_prices (
+          symbol, price, change_percent, high_price, low_price, volume, last_update_ts
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, now())
+        ON CONFLICT (symbol) DO UPDATE SET
+          price = EXCLUDED.price,
+          change_percent = EXCLUDED.change_percent,
+          high_price = EXCLUDED.high_price,
+          low_price = EXCLUDED.low_price,
+          volume = EXCLUDED.volume,
+          last_update_ts = EXCLUDED.last_update_ts,
+          updated_at = now()
+        `,
+        [
+          symbol,
+          parseFloat(ticker.lastPrice),
+          parseFloat(ticker.priceChangePercent),
+          parseFloat(ticker.highPrice),
+          parseFloat(ticker.lowPrice),
+          parseFloat(ticker.volume)
+        ]
+      );
+      
+      updated++;
+    }
+    
+    console.log(`[updateMarketPricesFromBinance] Updated ${updated} symbols`);
+    return updated;
+  } catch (error) {
+    console.error('Market price update failed:', error.message);
+    // 不抛出错误，让系统继续运�?
+    return 0;
+  }
+}
+
+/**
+ * 初始�?BTC 基准线模�?
+ * @returns {Promise<Object>} 创建的模型和持仓
+ */
+
+
+
+export async function initializeBtcBenchmark() {
+  const pool = getPool();
+  const modelId = BASELINE_MODEL_ID;
+  const initialUsd = 10000;
+
+  const existing = await getAgentModelById(modelId, { includeSecrets: false });
+  if (existing) {
+    return { model: existing, message: "BTC benchmark already exists" };
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const fetchPrice = async () => {
+      const { rows } = await client.query(
+        `SELECT price FROM market_prices WHERE symbol = $1 LIMIT 1`,
+        ["BTCUSDT"]
+      );
+      return rows[0]?.price != null ? Number(rows[0].price) : null;
+    };
+
+    let btcPrice = await fetchPrice();
+    if (!btcPrice) {
+      await updateMarketPricesFromBinance();
+      btcPrice = await fetchPrice();
+    }
+
+    if (!btcPrice) {
+      throw new Error("无法获取 BTCUSDT 最新价格，请先同步行情。");
+    }
+
+    const btcQuantity = initialUsd / btcPrice;
+
+    const systemPrompt =
+      "You are a passive BTC benchmark account that simply tracks buy-and-hold performance.";
+    const userPrompt = "No trading. Maintain the initial BTC position for comparison.";
+
+    await client.query(
+      `
+      INSERT INTO agent_models (
+        model_id,
+        display_name,
+        system_prompt,
+        user_prompt,
+        human_review_required,
+        auto_run_enabled,
+        auto_run_interval_minutes,
+        display_icon
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `,
+      [
+        modelId,
+        "BTC Benchmark",
+        systemPrompt,
+        userPrompt,
+        false,
+        false,
+        60,
+        "icon:gpt",
+      ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO agent_accounts_runtime (
+        model_id,
+        starting_equity,
+        latest_equity,
+        available_cash,
+        total_unrealized_pnl,
+        updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5, now())
+      ON CONFLICT (model_id) DO UPDATE SET
+        starting_equity = EXCLUDED.starting_equity,
+        latest_equity = EXCLUDED.latest_equity,
+        available_cash = EXCLUDED.available_cash,
+        total_unrealized_pnl = EXCLUDED.total_unrealized_pnl,
+        updated_at = now()
+      `,
+      [modelId, initialUsd, initialUsd, 0, 0]
+    );
+
+    await client.query(
+      `
+      INSERT INTO agent_positions_runtime (
+        model_id,
+        symbol,
+        side,
+        leverage,
+        quantity,
+        entry_price,
+        current_price,
+        notional,
+        notional_usd,
+        unrealized_pnl
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT (model_id, symbol) DO UPDATE SET
+        quantity = EXCLUDED.quantity,
+        entry_price = EXCLUDED.entry_price,
+        current_price = EXCLUDED.current_price,
+        notional = EXCLUDED.notional,
+        notional_usd = EXCLUDED.notional_usd,
+        unrealized_pnl = EXCLUDED.unrealized_pnl,
+        updated_at = now()
+      `,
+      [
+        modelId,
+        "BTCUSDT",
+        "LONG",
+        1,
+        btcQuantity,
+        btcPrice,
+        btcPrice,
+        initialUsd,
+        initialUsd,
+        0,
+      ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO agent_account_timeseries (
+        model_id,
+        ts,
+        equity,
+        cash_available,
+        unrealized_pnl,
+        realized_pnl
+      )
+      VALUES ($1, now(), $2, $3, $4, $5)
+      `,
+      [modelId, initialUsd, 0, 0, 0]
+    );
+
+    await client.query("COMMIT");
+
+    const model = await getAgentModelById(modelId, { includeSecrets: false });
+    return {
+      model,
+      benchmark: {
+        initialUsd,
+        btcPrice,
+        btcQuantity,
+      },
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("BTC benchmark initialization failed:", error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}

@@ -35,12 +35,14 @@ export default function ChartInner({ data, series, yFormatter, valueFormatter })
         {series.map((item) => (
           <Line
             key={item.lineKey}
-            type="monotone"
+            type="linear"
             dataKey={item.lineKey}
             name={item.name}
             stroke={item.color}
+            strokeDasharray={item.strokeDasharray}
             dot={false}
             strokeWidth={2}
+            connectNulls
           />
         ))}
       </LineChart>

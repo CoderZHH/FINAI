@@ -29,6 +29,11 @@ export async function PUT(request, context) {
     const payload = await request.json();
     console.log("[api/models] payload", payload);
 
+    const currentModel = await getAgentModelById(modelId);
+    if (!currentModel) {
+      return Response.json({ error: "Model not found" }, { status: 404 });
+    }
+
     const updates = {};
 
     if (Object.prototype.hasOwnProperty.call(payload, "display_name")) {
@@ -60,22 +65,64 @@ export async function PUT(request, context) {
       }
     }
 
-    if (Object.prototype.hasOwnProperty.call(payload, "system_prompt")) {
-      updates.system_prompt =
-        typeof payload.system_prompt === "string"
-          ? payload.system_prompt
-          : "";
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "system_prompt") &&
+      typeof payload.system_prompt === "string"
+    ) {
+      updates.system_prompt = payload.system_prompt;
     }
 
-    if (Object.prototype.hasOwnProperty.call(payload, "user_prompt")) {
-      updates.user_prompt =
-        typeof payload.user_prompt === "string"
-          ? payload.user_prompt
-          : "";
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "user_prompt") &&
+      typeof payload.user_prompt === "string"
+    ) {
+      updates.user_prompt = payload.user_prompt;
     }
 
     if (Object.prototype.hasOwnProperty.call(payload, "human_review_required")) {
       updates.human_review_required = Boolean(payload.human_review_required);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "prompt_template_id")) {
+      if (payload.prompt_template_id === null) {
+        updates.prompt_template_id = null;
+      } else if (
+        typeof payload.prompt_template_id === "string" &&
+        payload.prompt_template_id.trim()
+      ) {
+        updates.prompt_template_id = payload.prompt_template_id.trim();
+      } else {
+        throw new Error("prompt_template_id must be null or a non-empty string.");
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "auto_run_enabled")) {
+      const desiredAutoRun = Boolean(payload.auto_run_enabled);
+      const wasAutoRunEnabled = Boolean(currentModel.auto_run_enabled);
+      updates.auto_run_enabled = desiredAutoRun;
+      if (desiredAutoRun && !wasAutoRunEnabled) {
+        updates.last_auto_run_at = null;
+        updates.next_auto_run_at = null;
+      }
+      if (!desiredAutoRun) {
+        updates.next_auto_run_at = null;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "display_icon")) {
+      if (payload.display_icon === null) {
+        updates.display_icon = null;
+      } else if (typeof payload.display_icon === "string") {
+        updates.display_icon = payload.display_icon;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "auto_run_interval_minutes")) {
+      const interval = Number(payload.auto_run_interval_minutes);
+      if (!Number.isFinite(interval) || interval < 1) {
+        throw new Error("auto_run_interval_minutes must be a positive number.");
+      }
+      updates.auto_run_interval_minutes = Math.round(interval);
     }
 
     const model = await updateAgentModel(modelId, updates);

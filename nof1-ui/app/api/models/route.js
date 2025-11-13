@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createAgentModel, listAgentModels } from "../../../lib/dataRepository";
+import { ensureAutoRunner } from "../../../lib/autoRunner";
+
+ensureAutoRunner();
 
 function slugifyDisplayName(name) {
   return name
@@ -52,10 +55,21 @@ export async function POST(request) {
           ? payload.api_key.trim() || null
           : null,
       system_prompt:
-        typeof payload.system_prompt === "string" ? payload.system_prompt : "",
+        typeof payload.system_prompt === "string" ? payload.system_prompt : undefined,
       user_prompt:
-        typeof payload.user_prompt === "string" ? payload.user_prompt : "",
+        typeof payload.user_prompt === "string" ? payload.user_prompt : undefined,
       human_review_required: Boolean(payload.human_review_required),
+      prompt_template_id:
+        typeof payload.prompt_template_id === "string" && payload.prompt_template_id.trim()
+          ? payload.prompt_template_id.trim()
+          : null,
+      auto_run_enabled: Boolean(payload.auto_run_enabled),
+      auto_run_interval_minutes:
+        typeof payload.auto_run_interval_minutes === "number"
+          ? payload.auto_run_interval_minutes
+          : Number(payload.auto_run_interval_minutes) || 5,
+      display_icon:
+        typeof payload.display_icon === "string" ? payload.display_icon : undefined,
     };
 
     const model = await createAgentModel(cleanPayload);
