@@ -157,7 +157,6 @@ function deriveCards(models) {
         modelId: model.model_id,
         name: model.display_name,
         color: model.color_hex ?? "#111827",
-        iconValue: model.display_icon,
         latestDollar: latest,
         pnlAbs,
         pnlPct,
@@ -203,7 +202,6 @@ export default function ChartPanel() {
         return {
           ...series,
           color,
-          icon: series.icon,
           strokeDasharray: series.strokeDasharray ?? (isBenchmark ? "5 4" : undefined),
           is_benchmark: isBenchmark,
         };
@@ -332,7 +330,7 @@ export default function ChartPanel() {
       </div>
 
       {/* 图表区域 */}
-      <div className="mt-3 flex-1 min-h-0">
+      <div className="mt-3 flex-1 min-w-0 min-h-[320px]">
         <ChartInner
           data={filteredChartData}
           series={legendData}

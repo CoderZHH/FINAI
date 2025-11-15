@@ -12,17 +12,14 @@ export default function Header() {
               Alpha Arena 实验台
             </Link>
             <nav className="hidden items-center gap-6 text-sm md:flex">
-              <Link className="hover:underline" href="/live">
+              <Link className="hover:underline" href="/">
                 实盘
               </Link>
-              <Link className="hover:underline" href="/leaderboard">
-                排行榜
-              </Link>
-              <a className="hover:underline" href="#">
-                博客
-              </a>
               <Link className="hover:underline" href="/models">
                 模型库
+              </Link>
+              <Link className="hover:underline" href="/settings">
+                设置
               </Link>
             </nav>
           </div>

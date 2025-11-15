@@ -21,6 +21,30 @@ function CustomTooltip({ active, payload, label }) {
 
 const defaultValueFormatter = (value) => value;
 
+function ActiveDotWithLabel({ cx, cy, stroke, value, valueFormatter }) {
+  if (typeof cx !== "number" || typeof cy !== "number") return null;
+  const formatter = valueFormatter || defaultValueFormatter;
+  const labelText = formatter(value);
+  const boxWidth = Math.max(36, String(labelText).length * 7 + 8);
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={4} stroke={stroke} strokeWidth={2} fill="#fff" />
+      <g transform={`translate(${cx + 6}, ${cy - 18})`}>
+        <rect width={boxWidth} height={16} rx={6} fill="#fff" stroke={stroke} strokeWidth={0.5} />
+        <text
+          x={boxWidth / 2}
+          y={11}
+          textAnchor="middle"
+          fontSize={10}
+          className="fill-neutral-800"
+        >
+          {labelText}
+        </text>
+      </g>
+    </g>
+  );
+}
+
 export default function ChartInner({ data, series, yFormatter, valueFormatter }) {
   // valueFormatter 允许外部传入自定义单位（例如美元 / 百分比）。
   const formatValue = valueFormatter || defaultValueFormatter;
@@ -41,6 +65,9 @@ export default function ChartInner({ data, series, yFormatter, valueFormatter })
             stroke={item.color}
             strokeDasharray={item.strokeDasharray}
             dot={false}
+            activeDot={(props) => (
+              <ActiveDotWithLabel {...props} valueFormatter={formatValue} />
+            )}
             strokeWidth={2}
             connectNulls
           />

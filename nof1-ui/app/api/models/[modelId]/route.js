@@ -3,6 +3,7 @@ import {
   getAgentModelById,
   updateAgentModel,
 } from "../../../../lib/dataRepository";
+import { isModelRunning } from "../../../../lib/autoRunner";
 
 async function getModelIdFromContext(context) {
   if (!context) return undefined;
@@ -32,6 +33,12 @@ export async function PUT(request, context) {
     const currentModel = await getAgentModelById(modelId);
     if (!currentModel) {
       return Response.json({ error: "Model not found" }, { status: 404 });
+    }
+    if (isModelRunning(modelId)) {
+      return Response.json(
+        { error: "模型正在运行，暂时无法修改配置。" },
+        { status: 409 }
+      );
     }
 
     const updates = {};
@@ -63,20 +70,6 @@ export async function PUT(request, context) {
             ? payload.api_key.trim() || null
             : null;
       }
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(payload, "system_prompt") &&
-      typeof payload.system_prompt === "string"
-    ) {
-      updates.system_prompt = payload.system_prompt;
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(payload, "user_prompt") &&
-      typeof payload.user_prompt === "string"
-    ) {
-      updates.user_prompt = payload.user_prompt;
     }
 
     if (Object.prototype.hasOwnProperty.call(payload, "human_review_required")) {

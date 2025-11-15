@@ -24,7 +24,6 @@
  * ============================================================================
  */
 
-import { performance } from "node:perf_hooks";
 import {
   createPendingDecision,
   getAgentModelById,
@@ -35,9 +34,8 @@ import {
 } from "./dataRepository.js";
 import { buildPromptReplacements } from "./promptBuilder.js";
 import { callLLM } from "./llmClient.js";
-import { normaliseDecisionMap, applyDecisionSet } from "./decisionExecutor.js";
+import { applyDecisionSet } from "./decisionExecutor.js";
 import { logger } from "./logManager.js";
-import { info } from "node:console";
 
 // ============================================================================
 // 工具函数
@@ -45,6 +43,7 @@ import { info } from "node:console";
 
 /** 匹配提示词模板中的占位符 (如 {market_state_text}) */
 const TOKEN_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
+const DECISION_SYMBOL_KEYS = ["symbol", "coin", "asset", "ticker", "pair"];
 
 /**
  * 填充提示词模板中的占位符
@@ -103,6 +102,73 @@ function extractJsonPayload(text) {
   }
 }
 
+function stringifyForStorage(payload) {
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload;
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch (error) {
+    return String(payload);
+  }
+}
+
+function parseDecisionEntries(payload) {
+  let raw = payload;
+  if (typeof raw === "string" && raw.trim().length) {
+    try {
+      raw = JSON.parse(raw);
+    } catch (error) {
+      logger.warn("decisionEngine", "LLM decisions JSON parse failed", { error: error.message });
+      raw = null;
+    }
+  }
+
+  if (Array.isArray(raw)) {
+    return raw.filter(Boolean);
+  }
+
+  if (raw && typeof raw === "object") {
+    if (Array.isArray(raw.decisions)) {
+      return raw.decisions.filter(Boolean);
+    }
+    if (raw.decisions && typeof raw.decisions === "object") {
+      return Object.entries(raw.decisions).map(([symbol, value]) => ({
+        symbol,
+        ...(value ?? {}),
+      }));
+    }
+    return Object.entries(raw).map(([symbol, value]) => ({
+      symbol,
+      ...(value ?? {}),
+    }));
+  }
+
+  return [];
+}
+
+function normalizeDecisionMap(payload) {
+  const entries = parseDecisionEntries(payload);
+  const normalized = {};
+
+  entries.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    let symbolCandidate = null;
+    for (const key of DECISION_SYMBOL_KEYS) {
+      if (typeof item[key] === "string" && item[key].trim()) {
+        symbolCandidate = item[key].trim();
+        break;
+      }
+    }
+    if (!symbolCandidate) return;
+    const symbol = symbolCandidate.toUpperCase();
+    normalized[symbol] = {
+      ...item,
+      symbol,
+    };
+  });
+
+  return { entries, map: normalized };
+}
 
 // ============================================================================
 // 核心决策周期函数
@@ -130,7 +196,7 @@ function extractJsonPayload(text) {
  * @returns {Promise<Object>} 决策执行结果
  *   - prompt: 发送给 LLM 的用户提示词
  *   - response: LLM 完整响应对象 { text, reasoning, raw }
- *   - decisions: 规范化的决策映射 { 'BTCUSDT': {...}, 'ETHUSDT': {...} }
+ *   - decisions: 规范化的决策映射 { 'BTC': {...}, 'ETH': {...} }
  *   - pending: 待审核记录 (如果需要人工审核)
  *   - execution: 执行结果 (如果自动执行)
  * 
@@ -145,7 +211,7 @@ function extractJsonPayload(text) {
  * ├─────────────────────────────────────────────────────────────────┤
  * │ 2. LLM 调用阶段                                                  │
  * │    - 发送完整提示词到 DeepSeek/OpenAI API                       │
- * │    - 测量响应时间 (performance.now)                             │
+ * │    - 测量响应时间 (Date.now)                                    │
  * │    - 记录请求和响应到浏览器控制台                               │
  * ├─────────────────────────────────────────────────────────────────┤
  * │ 3. 决策解析阶段                                                  │
@@ -205,7 +271,8 @@ export async function runDecisionCycle(modelId, options = {}) {
   // ------------------------------------------------------------------------
   // 步骤 3: 调用 LLM API
   // ------------------------------------------------------------------------
-  const cycleStartedAt = performance.now(); // 记录开始时间 (高精度)
+  const cycleStartedAt = Date.now(); // 记录开始时间
+  const cycleId = Math.floor(cycleStartedAt / 1000);
 
 
   // 发送请求到 LLM API (DeepSeek/OpenAI)
@@ -218,8 +285,11 @@ export async function runDecisionCycle(modelId, options = {}) {
     symbols: trackedSymbols,
   });
 
-  const durationMs = Math.round(performance.now() - cycleStartedAt); // 计算耗时
-
+  const durationMs = Date.now() - cycleStartedAt; // 计算耗时
+  const reasoningContent =
+    llmResult.reasoning ??
+    llmResult.raw?.choices?.[0]?.message?.reasoning_content ??
+    null;
   logger.info(`⏱️  请求耗时: ${durationMs}ms\n`);
 
   // ------------------------------------------------------------------------
@@ -228,28 +298,13 @@ export async function runDecisionCycle(modelId, options = {}) {
   const parsedPayload = llmResult.decisions;
   logger.info('parsedPayload', parsedPayload);
 
-  // 📊 将数组格式转换为对象映射格式
-  // 输入: [{coin: "BTC", signal: "hold", ...}, {coin: "ETH", ...}]
-  // 输出: {BTC: {signal: "hold", ...}, ETH: {...}}
-  let decisionsMap = {};
+  const { entries: decisionList, map: decisionsMap } = normalizeDecisionMap(parsedPayload);
 
-  if (rawDecisionList && Array.isArray(rawDecisionList)) {
-    // 数组格式：转换为映射
-    rawDecisionList.forEach(item => {
-      const coin = item.coin || item.symbol;
-      if (coin) {
-        decisionsMap[coin] = item;
-      }
-    });
-  } else if (parsedPayload && typeof parsedPayload === 'object') {
-    // 对象格式：直接使用
-    decisionsMap = parsedPayload.decisions || parsedPayload;
+  if (!Object.keys(decisionsMap).length) {
+    throw new Error("LLM 响应中未找到有效的决策数据，请检查提示词和模型输出格式。");
   }
 
-  // 规范化决策映射格式（添加 USDT 后缀）
-  // 输入: { BTC: {...}, ETH: {...} }
-  // 输出: { BTCUSDT: {...}, ETHUSDT: {...} }
-  const normalizedDecisions = normaliseDecisionMap(decisionsMap);
+  const serializedResponse = stringifyForStorage(llmResult.raw ?? parsedPayload);
 
   // ------------------------------------------------------------------------
   // 步骤 5: 如果不持久化，直接返回结果 (测试模式)
@@ -258,7 +313,7 @@ export async function runDecisionCycle(modelId, options = {}) {
     return {
       prompt: userPrompt,
       response: llmResult,
-      decisions: normalizedDecisions,
+      decisions: decisionsMap,
     };
   }
 
@@ -268,15 +323,19 @@ export async function runDecisionCycle(modelId, options = {}) {
   // 构建完整的决策数据包 (用于数据库存储)
   const decisionBlob = {
     prompt_text: userPrompt,              // 用户提示词
-    response_text: llmResult.data,        // LLM 原始响应文本（JSON 字符串）
+    response_text: serializedResponse,    // LLM 原始响应（字符串）
     response_json: llmResult.decisions,   // 原始 JSON决策
-    decisions: normalizedDecisions,       // 规范化的决策映射
-    reasoning: llmResult.reasoning ?? "", // 推理过程 (DeepSeek 特有)
+    decisions: decisionsMap,              // 决策映射
+    decision_list: decisionList,          // 原始数组格式
+    reasoning: reasoningContent ?? "", // 推理过程 (DeepSeek 特有)
     replacements,                         // 提示词替换变量 (用于审计)
     source,                               // 决策来源标识
   };
 
   // 创建待审核/待执行记录
+  const initialMessage = model.human_review_required
+    ? "Decision requires human approval."
+    : "Auto decision executing...";
   const pending = await createPendingDecision(
     model.model_id,
     decisionBlob,
@@ -285,6 +344,10 @@ export async function runDecisionCycle(modelId, options = {}) {
     {
       decision_type: source,
       auto_executed: !model.human_review_required, // 是否自动执行
+      public_message: initialMessage,
+      cot_trace_summary: model.human_review_required ? "Pending review" : "Awaiting execution result",
+      cycle_id: cycleId,
+      reasoning_content: reasoningContent,
     }
   );
 
@@ -300,8 +363,11 @@ export async function runDecisionCycle(modelId, options = {}) {
       "Decision enqueued for approval.",
       {
         prompt_text: userPrompt,
-        response_text: llmResult.text,
+        response_text: serializedResponse,
         response_json: llmResult.decisions,
+        decisions: decisionsMap,
+        cycle_id: cycleId,
+        reasoning_content: reasoningContent,
       }
     );
 
@@ -315,26 +381,21 @@ export async function runDecisionCycle(modelId, options = {}) {
 
   // ========== 分支 B: 自动执行交易 ==========
   // 执行决策集 (发送订单到交易所)
-  const execution = await applyDecisionSet(model.model_id, normalizedDecisions, {
+  const execution = await applyDecisionSet(model.model_id, decisionsMap, {
     decisionSource: "ai_auto",
+    cycleId,
   });
 
-  // 更新决策状态为已批准
-  await updatePendingDecisionStatus(pending.id, "approved");
-
-  // 记录执行结果和账户快照
-  await insertAgentLog(
-    model.model_id,
-    "Auto decision executed.",
-    `Executed ${execution.executed} trades automatically.`, // 执行的交易数量
-    {
-      prompt_text: userPrompt,
-      response_text: llmResult.text,
-      response_json: llmResult.decisions, // ✅ 使用 llmResult.decisions
-      account_value_snapshot: execution.account?.latest_equity ?? null, // 账户价值快照
-      sharpe_snapshot: replacements.sharpe_ratio ?? null, // 夏普比率快照
-    }
-  );
+  // 更新决策状态为已批准并覆盖日志内容
+  const updatedPending = await updatePendingDecisionStatus(pending.id, "approved", {
+    public_message: "Auto decision executed.",
+    cot_trace_summary: `Executed ${execution.executed} trades automatically.`,
+    account_value_snapshot: execution.account?.latest_equity ?? null,
+    sharpe_snapshot: replacements.sharpe_ratio ?? null,
+    response_json: llmResult.decisions,
+    decision_blob: decisionBlob,
+    reasoning_content: reasoningContent,
+  });
 
   // 更新模型下次运行时间
   await markModelAutoRun(model.model_id, {
@@ -345,7 +406,7 @@ export async function runDecisionCycle(modelId, options = {}) {
   return {
     prompt: userPrompt,
     response: llmResult,
-    pending,
+    pending: updatedPending,
     execution,
   };
 }

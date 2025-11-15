@@ -12,28 +12,38 @@
  * 5. 控制台打印提示词所需字段，便于核对
  *
  * 运行方式：
- *   HYPERLIQUID_PROXY=http://127.0.0.1:7890 \
- *   HYPERLIQUID_START=2024-10-01T00:00:00Z \
- *   HYPERLIQUID_END=2024-11-06T10:16:00Z \
- *   node --env-file=.env.local scripts/seed-hyperliquid.js
+ *   GET_MARKET_PROXY=http://127.0.0.1:7890 \
+ *   GET_MARKET_START=2024-10-01T00:00:00Z \
+ *   GET_MARKET_END=2024-11-06T10:16:00Z \
+ *   node scripts/get_market.js
  *
  * ⚠️ 依赖：technicalindicators、undici（若需要代理），已在 package.json 中声明
  */
 
-const path = require("node:path");
-const { pathToFileURL } = require("node:url");
-const { performance } = require("node:perf_hooks");
-const { EMA, MACD, RSI, ATR, SMA } = require("technicalindicators");
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { performance } from "node:perf_hooks";
+import technicalindicators from "technicalindicators";
+import { loadEnvFromFile } from "./utils/loadEnv.js";
+
+const { EMA, MACD, RSI, ATR, SMA } = technicalindicators;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+const envFile = process.env.ENV_FILE ?? path.resolve(PROJECT_ROOT, ".env.local");
+await loadEnvFromFile(envFile);
 
 let ProxyAgent = null;
 let setGlobalDispatcher = null;
 try {
-  ({ ProxyAgent, setGlobalDispatcher } = require("undici"));
+  const undici = await import("undici");
+  ProxyAgent = undici.ProxyAgent;
+  setGlobalDispatcher = undici.setGlobalDispatcher;
 } catch (error) {
   ProxyAgent = null;
   setGlobalDispatcher = null;
-  if (process.env.HYPERLIQUID_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
-    console.error("[binance-seed] 检测到代理配置，但未安装 'undici'。请先执行 `npm install undici`。");
+  if (process.env.GET_MARKET_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
+    console.error("[get-market] 检测到代理配置，但未安装 'undici'。请先执行 `npm install undici`。");
     throw error;
   }
 }
@@ -46,7 +56,7 @@ const FUTURES_BASE =
     : "https://fapi.binance.com";
 
 const DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"];
-const SYMBOLS = (process.env.HYPERLIQUID_SYMBOLS || DEFAULT_SYMBOLS.join(","))
+const SYMBOLS = (process.env.GET_MARKET_SYMBOLS || DEFAULT_SYMBOLS.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -68,27 +78,27 @@ const INTERVAL_MS = {
   [TIMEFRAME_HTF]: 4 * 60 * 60 * 1000,
 };
 
-// 1m 默认抓取最近 3 天，可通过 HYPERLIQUID_LOOKBACK_DAYS 覆盖
-const LOOKBACK_DAYS = Number(process.env.HYPERLIQUID_LOOKBACK_DAYS ?? 3);
-// 4h 需更多历史以计算 EMA50 / MACD，默认至少 10 天，可通过 HYPERLIQUID_HTF_LOOKBACK_DAYS 改写
+// 1m 默认抓取最近 3 天，可通过 GET_MARKET_LOOKBACK_DAYS 覆盖
+const LOOKBACK_DAYS = Number(process.env.GET_MARKET_LOOKBACK_DAYS ?? 3);
+// 4h 需更多历史以计算 EMA50 / MACD，默认至少 10 天，可通过 GET_MARKET_HTF_LOOKBACK_DAYS 改写
 const HTF_LOOKBACK_DAYS = Number(
-  process.env.HYPERLIQUID_HTF_LOOKBACK_DAYS ?? Math.max(LOOKBACK_DAYS, 20)
+  process.env.GET_MARKET_HTF_LOOKBACK_DAYS ?? Math.max(LOOKBACK_DAYS, 20)
 );
-const START_ISO = process.env.HYPERLIQUID_START ?? null;
-const END_ISO = process.env.HYPERLIQUID_END ?? null;
-const MAX_RETRY = Number(process.env.HYPERLIQUID_RETRY ?? 3);
+const START_ISO = process.env.GET_MARKET_START ?? null;
+const END_ISO = process.env.GET_MARKET_END ?? null;
+const MAX_RETRY = Number(process.env.GET_MARKET_RETRY ?? 3);
 const MAX_KLINE_LIMIT = 1500; // Binance API 单次 klines 最大返回数
 const OPEN_INTEREST_PERIOD = "5m"; // openInterestHist 最小周期
 
 const proxyUrl =
-  process.env.HYPERLIQUID_PROXY ||
+  process.env.GET_MARKET_PROXY ||
   process.env.HTTPS_PROXY ||
   process.env.HTTP_PROXY ||
   "http://127.0.0.1:7890";
 
 if (ProxyAgent && setGlobalDispatcher) {
   setGlobalDispatcher(new ProxyAgent(proxyUrl));
-  console.log(`[binance-seed] 使用代理 ${proxyUrl}`);
+  console.log(`[get-market] 使用代理 ${proxyUrl}`);
 }
 
 /** ============================ 公共工具 ============================ */
@@ -148,7 +158,7 @@ async function fetchJSON(url, description, attempt = 1) {
   } catch (error) {
     if (attempt >= MAX_RETRY) throw error;
     const delay = 500 * attempt;
-    console.warn(`[binance-seed] ${description} 第 ${attempt} 次失败 (${error.message})，将在 ${delay}ms 后重试...`);
+    console.warn(`[get-market] ${description} 第 ${attempt} 次失败 (${error.message})，将在 ${delay}ms 后重试...`);
     await sleep(delay);
     return fetchJSON(url, description, attempt + 1);
   }
@@ -429,7 +439,7 @@ async function persistSymbolData({
   upsertMarketPrice,
 }) {
   if (!minuteCandles.length) {
-    console.warn(`[binance-seed] 跳过 ${symbol}：未获取到分钟数据。`);
+    console.warn(`[get-market] 跳过 ${symbol}：未获取到分钟数据。`);
     return;
   }
 
@@ -474,7 +484,7 @@ async function handleSymbol({
       startTime: oiStart,
       endTime: endMs + 2 * 60 * 60 * 1000,
     }).catch((error) => {
-      console.warn(`[binance-seed] ${binanceSymbol} open interest history 获取失败：${error.message}`);
+      console.warn(`[get-market] ${binanceSymbol} open interest history 获取失败：${error.message}`);
       return [];
     }),
     fetchFundingRateSeries({
@@ -482,7 +492,7 @@ async function handleSymbol({
       startTime: fundingStart,
       endTime: endMs + 8 * 60 * 60 * 1000,
     }).catch((error) => {
-      console.warn(`[binance-seed] ${binanceSymbol} funding history 获取失败：${error.message}`);
+      console.warn(`[get-market] ${binanceSymbol} funding history 获取失败：${error.message}`);
       return [];
     }),
   ]);
@@ -584,7 +594,7 @@ async function main() {
     for (const symbol of SYMBOLS) {
       const binanceSymbol = BINANCE_SYMBOL_MAP[symbol];
       if (!binanceSymbol) {
-        console.warn(`[binance-seed] 未配置 ${symbol} 对应的 Binance 交易对，跳过。`);
+        console.warn(`[get-market] 未配置 ${symbol} 对应的 Binance 交易对，跳过。`);
         continue;
       }
 
@@ -609,7 +619,10 @@ async function main() {
   }
 }
 
-if (require.main === module) {
+const isMainModule =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
   main().catch((error) => {
     console.error("Binance seed script failed:", error);
     process.exitCode = 1;

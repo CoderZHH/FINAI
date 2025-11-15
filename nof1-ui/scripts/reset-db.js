@@ -1,7 +1,16 @@
 /* eslint-disable no-console */
-const path = require("node:path");
-const fs = require("node:fs/promises");
-const { pathToFileURL } = require("node:url");
+import path from "node:path";
+import fs from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEnvFromFile } from "./utils/loadEnv.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+const PROMPTS_DIR = path.resolve(PROJECT_ROOT, "prompts");
+
+const envFile = process.env.ENV_FILE ?? path.resolve(PROJECT_ROOT, ".env.local");
+await loadEnvFromFile(envFile);
 
 async function importModule(relativePath) {
   const modulePath = path.join(__dirname, relativePath);
@@ -13,55 +22,8 @@ async function getPool() {
   return getPool();
 }
 
-const ROOT_DIR = path.resolve(__dirname, "..", "..");
-
-const PLACEHOLDER_PRESETS = [
-  {
-    token: "minutes_since_start",
-    label: "运行分钟数",
-    description: "距离实验初始化所经过的分钟数，用于提醒模型运行总时长。",
-    sample_value: "17802",
-    category: "session",
-  },
-  {
-    token: "current_time",
-    label: "当前时间",
-    description: "当前服务器时间（ISO 字符串）。",
-    sample_value: "2025-11-03T21:51:04.603Z",
-    category: "session",
-  },
-  {
-    token: "num_invocations",
-    label: "累计调用次数",
-    description: "过去触发模型决策的累积次数。",
-    sample_value: "6634",
-    category: "session",
-  },
-  {
-    token: "market_state_text",
-    label: "市场状态摘要",
-    description: "基于 market_price_history/market_prices 生成的多币种行情片段。",
-    sample_value: "### ALL BTC DATA ...",
-    category: "market",
-  },
-  {
-    token: "sharpe_ratio",
-    label: "夏普比率",
-    description: "agent_accounts_runtime 中记录的最新夏普比率。",
-    sample_value: "0.359",
-    category: "performance",
-  },
-  {
-    token: "position_state_text",
-    label: "仓位状态摘要",
-    description: "基于 agent_positions_runtime + agent_accounts_runtime 生成的仓位与账户描述。",
-    sample_value: "Current Total Return (percent): -57.08% ...",
-    category: "account",
-  },
-];
-
-async function loadTextFromRoot(filename) {
-  const filePath = path.resolve(ROOT_DIR, filename);
+async function loadPromptFile(filename) {
+  const filePath = path.resolve(PROMPTS_DIR, filename);
   try {
     const content = await fs.readFile(filePath, "utf8");
     return content.trim();
@@ -87,34 +49,9 @@ function extractPlaceholderTokens(...payloads) {
   return Array.from(tokens);
 }
 
-async function seedPromptPlaceholders(pool) {
-  for (const preset of PLACEHOLDER_PRESETS) {
-    await pool.query(
-      `
-      INSERT INTO prompt_placeholders (token, label, description, sample_value, category)
-      VALUES ($1,$2,$3,$4,$5)
-      ON CONFLICT (token) DO UPDATE
-      SET
-        label = EXCLUDED.label,
-        description = EXCLUDED.description,
-        sample_value = EXCLUDED.sample_value,
-        category = EXCLUDED.category,
-        updated_at = now()
-      `,
-      [
-        preset.token,
-        preset.label,
-        preset.description,
-        preset.sample_value,
-        preset.category,
-      ]
-    );
-  }
-}
-
 async function seedDefaultPromptTemplate(pool) {
-  const systemPrompt = await loadTextFromRoot("系统提示词.md");
-  const userPrompt = await loadTextFromRoot("模板字符串.md");
+  const systemPrompt = await loadPromptFile("系统提示词.md");
+  const userPrompt = await loadPromptFile("模板字符串.md");
 
   if (!systemPrompt || !userPrompt) {
     console.warn("[reset-db] 默认提示词文件为空，跳过默认模板创建。");
@@ -157,11 +94,6 @@ async function seedDefaultPromptTemplate(pool) {
   return rows[0]?.id ?? null;
 }
 
-async function seedPromptMetadata(pool) {
-  await seedPromptPlaceholders(pool);
-  await seedDefaultPromptTemplate(pool);
-}
-
 async function dropExistingTables(pool) {
   const tables = [
     "agent_positions_runtime",
@@ -187,18 +119,6 @@ async function ensureSchema(pool) {
   await dropExistingTables(pool);
 
   await pool.query(`
-    CREATE TABLE prompt_placeholders (
-      token TEXT PRIMARY KEY,
-      label TEXT NOT NULL,
-      description TEXT,
-      sample_value TEXT,
-      category TEXT,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now()
-    );
-  `);
-
-  await pool.query(`
     CREATE TABLE prompt_templates (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       template_name TEXT UNIQUE NOT NULL,
@@ -220,8 +140,6 @@ async function ensureSchema(pool) {
       display_name TEXT NOT NULL,
       api_base_url TEXT,
       api_key TEXT,
-      system_prompt TEXT,
-      user_prompt TEXT,
       human_review_required BOOLEAN DEFAULT FALSE,
       prompt_template_id UUID REFERENCES prompt_templates(id) ON DELETE SET NULL,
       auto_run_enabled BOOLEAN DEFAULT FALSE,
@@ -244,59 +162,9 @@ async function ensureSchema(pool) {
       sharpe_ratio NUMERIC(18,8) DEFAULT 0,
       win_rate NUMERIC(18,8) DEFAULT 0,
       trade_count INTEGER DEFAULT 0,
+      metadata JSONB DEFAULT '{}'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
-  `);
-
-  await pool.query(`
-    CREATE TABLE agent_positions_runtime (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      model_id TEXT REFERENCES agent_models(model_id) ON DELETE CASCADE,
-      symbol TEXT NOT NULL,
-      side TEXT NOT NULL,
-      leverage INTEGER DEFAULT 1,
-      entry_price NUMERIC(18,8),
-      current_price NUMERIC(18,8),
-      quantity NUMERIC(18,8),
-      notional NUMERIC(18,8),
-      notional_usd NUMERIC(18,8),
-      unrealized_pnl NUMERIC(18,8),
-      take_profit NUMERIC(18,8),
-      stop_loss NUMERIC(18,8),
-      liquidation_price NUMERIC(18,8),
-      sl_oid TEXT,
-      tp_oid TEXT,
-      entry_oid TEXT,
-      confidence NUMERIC(10,6),
-      risk_usd NUMERIC(18,8),
-      wait_for_fill BOOLEAN DEFAULT FALSE,
-      holding_seconds INTEGER DEFAULT 0,
-      exit_plan JSONB,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX agent_positions_runtime_model_symbol_idx
-    ON agent_positions_runtime(model_id, symbol);
-  `);
-
-  await pool.query(`
-    CREATE TABLE pending_decisions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      model_id TEXT REFERENCES agent_models(model_id) ON DELETE CASCADE,
-      decision_blob JSONB NOT NULL,
-      inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
-      decision_type TEXT,
-      target_symbol TEXT,
-      auto_executed BOOLEAN DEFAULT FALSE
-    );
-  `);
-
-  await pool.query(`
-    CREATE INDEX pending_decisions_status_idx
-    ON pending_decisions(status, inserted_at DESC);
   `);
 
   await pool.query(`
@@ -309,6 +177,11 @@ async function ensureSchema(pool) {
       prompt_text TEXT,
       response_text TEXT,
       response_json JSONB,
+      reasoning_content TEXT,
+      decision_blob JSONB,
+      review_status TEXT NOT NULL DEFAULT 'logged',
+      reviewed_at TIMESTAMPTZ,
+      review_notes TEXT,
       account_value_snapshot NUMERIC(18,8),
       sharpe_snapshot NUMERIC(18,8),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -382,6 +255,8 @@ async function ensureSchema(pool) {
       holding_time INTEGER,
       realized_net_pnl NUMERIC(18,8),
       decision_source TEXT,
+      take_profit NUMERIC(18,8),
+      stop_loss NUMERIC(18,8),
       exit_plan JSONB,
       order_id TEXT,
       action TEXT,
@@ -432,13 +307,10 @@ async function truncateTables(pool) {
     "agent_account_timeseries",
     "trades",
     "agent_accounts_runtime",
-    "agent_positions_runtime",
-    "pending_decisions",
     "agent_logs",
     "market_prices",
     "agent_models",
     "prompt_templates",
-    "prompt_placeholders",
   ];
 
   for (const table of tables) {
@@ -457,8 +329,8 @@ async function main() {
     console.log("Truncating tables...");
     await truncateTables(pool);
 
-    console.log("Seeding prompt metadata...");
-    await seedPromptMetadata(pool);
+    console.log("Seeding default prompt template...");
+    await seedDefaultPromptTemplate(pool);
 
     console.log("Database is now clean.");
   } finally {
@@ -466,7 +338,10 @@ async function main() {
   }
 }
 
-if (require.main === module) {
+const isMainModule =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
   main().catch((err) => {
     console.error("Reset failed:", err);
     process.exitCode = 1;

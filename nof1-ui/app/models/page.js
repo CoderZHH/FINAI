@@ -19,7 +19,44 @@ const fetcher = async (url) => {
   return response.json();
 };
 
-const CUSTOM_TEMPLATE_VALUE = "__custom__";
+const PLACEHOLDER_LIBRARY = [
+  {
+    token: "minutes_since_start",
+    label: "运行分钟数",
+    description: "距离实验初始化所经过的分钟数。",
+    sample_value: "17802",
+  },
+  {
+    token: "current_time",
+    label: "当前时间",
+    description: "当前服务器时间（ISO 字符串）。",
+    sample_value: "2025-11-03T21:51:04.603Z",
+  },
+  {
+    token: "num_invocations",
+    label: "累计调用次数",
+    description: "触发模型决策的累计次数。",
+    sample_value: "6634",
+  },
+  {
+    token: "market_state_text",
+    label: "市场状态摘要",
+    description: "多币种行情、指标与历史序列摘要。",
+    sample_value: "### ALL BTC DATA ...",
+  },
+  {
+    token: "sharpe_ratio",
+    label: "夏普比率",
+    description: "根据账户时间序列计算的夏普比率。",
+    sample_value: "0.359",
+  },
+  {
+    token: "position_state_text",
+    label: "仓位状态摘要",
+    description: "当前账户净值、持仓与风险的总结。",
+    sample_value: "Current Total Return (percent): -57.08% ...",
+  },
+];
 
 const EMPTY_FORM = {
   display_name: "",
@@ -116,8 +153,8 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
     <div
       className={clsx(
         "group relative overflow-hidden rounded-3xl border p-5 shadow-md transition-all duration-300 cursor-pointer",
-        active 
-          ? "border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50 shadow-lg shadow-purple-200/50 scale-105" 
+        active
+          ? "border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50 shadow-lg shadow-purple-200/50 scale-105"
           : "border-slate-200 bg-gradient-to-br from-white to-slate-50 hover:shadow-xl hover:shadow-slate-200/50 hover:-translate-y-1"
       )}
     >
@@ -177,9 +214,9 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
           编辑
         </button>
         <div className="flex items-center gap-2">
-          <button 
-            type="button" 
-            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all duration-300 hover:bg-slate-200 hover:scale-105 active:scale-95" 
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all duration-300 hover:bg-slate-200 hover:scale-105 active:scale-95"
             onClick={() => onDuplicate(template)}
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -187,9 +224,9 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
             </svg>
             复制
           </button>
-          <button 
-            type="button" 
-            className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-rose-500 to-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-rose-300/50 active:scale-95" 
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-rose-500 to-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-rose-300/50 active:scale-95"
             onClick={() => onDelete(template)}
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -409,7 +446,7 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
           </div>
 
           {/* 提交按钮 */}
-          <button className="flex justify-end gap-3 pt-4 border-t-2 border-slate-200"/>
+          <button className="flex justify-end gap-3 pt-4 border-t-2 border-slate-200" />
           {/* 提交按钮 */}
           <div className="flex justify-end gap-3 pt-4 border-t-2 border-slate-200">
             <button
@@ -596,8 +633,8 @@ function ModelAvatar({ icon, size = "lg" }) {
     size === "lg"
       ? "h-12 w-12"
       : size === "md"
-      ? "h-8 w-8"
-      : "h-6 w-6";
+        ? "h-8 w-8"
+        : "h-6 w-6";
 
   if (info?.type === "image") {
     return (
@@ -639,13 +676,13 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
     model.auto_run_enabled && model.next_auto_run_at ? formatDate(model.next_auto_run_at) : "";
 
   return (
-    <div 
-      onClick={() => onEdit(model)} 
+    <div
+      onClick={() => onEdit(model)}
       className="group relative overflow-hidden rounded-2xl border border-neutral-200/50 bg-white/90 p-5 shadow-sm backdrop-blur-sm transition-all duration-500 ease-out cursor-pointer hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 active:scale-[0.98]"
     >
       {/* 简约悬浮效果 */}
       <div className="absolute inset-0 -z-10 bg-gradient-to-br from-neutral-50 via-white to-neutral-50 opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
-      
+
       {/* 顶部区域 */}
       <div className="flex items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
@@ -661,7 +698,7 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
             </p>
           </div>
         </div>
-        
+
         {/* 状态指示器 */}
         <div className="flex items-center gap-2">
           {model.auto_run_enabled && (
@@ -669,8 +706,8 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
           )}
           <div className={clsx(
             "h-8 w-8 rounded-full flex items-center justify-center transition-all duration-300",
-            model.auto_run_enabled 
-              ? "bg-green-50 text-green-600 group-hover:bg-green-100" 
+            model.auto_run_enabled
+              ? "bg-green-50 text-green-600 group-hover:bg-green-100"
               : "bg-neutral-100 text-neutral-400 group-hover:bg-neutral-200"
           )}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -710,7 +747,7 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
             </span>
           </div>
         </div>
-        
+
         <div className="flex items-start gap-2 transition-transform duration-300 hover:translate-x-1">
           <span className="mt-0.5 text-neutral-400">•</span>
           <div className="flex-1">
@@ -720,7 +757,7 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
             </span>
           </div>
         </div>
-        
+
         <div className="flex items-start gap-2 transition-transform duration-300 hover:translate-x-1">
           <span className="mt-0.5 text-neutral-400">•</span>
           <div className="flex-1">
@@ -791,9 +828,9 @@ function FormModal({
 }) {
   const isEdit = mode === "edit";
   const templateOptions = promptTemplates || [];
-  const isCustom =
-    !formState.prompt_template_id || formState.prompt_template_id === CUSTOM_TEMPLATE_VALUE;
-  const selectedTemplate = !isCustom
+  const missingTemplate =
+    templateOptions.length === 0 || !formState.prompt_template_id;
+  const selectedTemplate = !missingTemplate
     ? templateOptions.find((tpl) => tpl.id === formState.prompt_template_id)
     : null;
   const iconSelectValue = useMemo(() => {
@@ -805,22 +842,18 @@ function FormModal({
   }, [formState.display_icon]);
 
   useEffect(() => {
-    if (!isCustom && selectedTemplate) {
+    if (selectedTemplate) {
       onChange((prev) => ({
         ...prev,
         system_prompt: selectedTemplate.system_prompt ?? "",
         user_prompt: selectedTemplate.user_prompt ?? "",
       }));
     }
-  }, [isCustom, selectedTemplate, onChange]);
+  }, [selectedTemplate, onChange]);
 
   const handleTemplateChange = (event) => {
     const nextValue = event.target.value;
     if (!nextValue) return;
-    if (nextValue === CUSTOM_TEMPLATE_VALUE) {
-      onChange({ ...formState, prompt_template_id: CUSTOM_TEMPLATE_VALUE });
-      return;
-    }
     const template = templateOptions.find((tpl) => tpl.id === nextValue);
     onChange({
       ...formState,
@@ -880,11 +913,10 @@ function FormModal({
                   key={option.value}
                   type="button"
                   onClick={() => onChange({ ...formState, display_icon: option.value })}
-                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${
-                    selected
+                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${selected
                       ? "border-emerald-400 bg-emerald-50 text-emerald-700 shadow-sm"
                       : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-200"
-                  }`}
+                    }`}
                 >
                   <img src={option.src} alt={option.label} className="h-6 w-6 rounded-full object-contain" />
                   <span className="truncate">{option.label}</span>
@@ -894,11 +926,10 @@ function FormModal({
             <button
               type="button"
               onClick={() => onChange({ ...formState, display_icon: "" })}
-              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${
-                iconSelectValue === CUSTOM_ICON_VALUE
+              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${iconSelectValue === CUSTOM_ICON_VALUE
                   ? "border-blue-400 bg-blue-50 text-blue-700 shadow-sm"
                   : "border-neutral-200 bg-white text-neutral-600 hover:border-blue-200"
-              }`}
+                }`}
             >
               <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600">
                 [EDIT]️
@@ -952,12 +983,13 @@ function FormModal({
         <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
           <span>提示词模板</span>
           <select
-            value={isCustom ? CUSTOM_TEMPLATE_VALUE : formState.prompt_template_id || ""}
+            value={formState.prompt_template_id || ""}
             onChange={handleTemplateChange}
-            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+            disabled={!templateOptions.length}
+            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-neutral-100"
           >
             {templateOptions.length === 0 ? (
-              <option value={CUSTOM_TEMPLATE_VALUE}>暂未配置模板</option>
+              <option value="">暂未配置模板</option>
             ) : (
               templateOptions.map((template) => (
                 <option key={template.id} value={template.id}>
@@ -966,35 +998,39 @@ function FormModal({
                 </option>
               ))
             )}
-            <option value={CUSTOM_TEMPLATE_VALUE}>不绑定模板（手动编辑）</option>
           </select>
         </label>
 
-        <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
-          <input
-            type="checkbox"
-            checked={formState.human_review_required}
-            onChange={(event) => onChange({ ...formState, human_review_required: event.target.checked })}
-            className="h-4 w-4 rounded border-neutral-400 text-emerald-500 focus:ring-emerald-400"
-          />
-          <span>执行前需要人工审核</span>
-        </label>
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
+            <div className="flex flex-col">
+              <span className="font-semibold text-neutral-800">是否需要人工审核</span>
+              <span className="text-xs text-neutral-500">开启后需要人工批准才能执行交易</span>
+            </div>
+            <input
+              type="checkbox"
+              checked={formState.human_review_required}
+              onChange={(event) => onChange({ ...formState, human_review_required: event.target.checked })}
+              className="h-4 w-4 rounded border-neutral-400 text-emerald-500 focus:ring-emerald-400"
+            />
+          </label>
 
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>自动执行周期（分钟）</span>
-          <input
-            type="number"
-            min={1}
-            value={formState.auto_run_interval_minutes}
-            onChange={(event) =>
-              onChange({
-                ...formState,
-                auto_run_interval_minutes: Number(event.target.value || 1),
-              })
-            }
-            className="w-32 rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-          />
-        </label>
+          <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
+            <span>自动执行周期（分钟）</span>
+            <input
+              type="number"
+              min={1}
+              value={formState.auto_run_interval_minutes}
+              onChange={(event) =>
+                onChange({
+                  ...formState,
+                  auto_run_interval_minutes: Number(event.target.value || 1),
+                })
+              }
+              className="w-32 rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+            />
+          </label>
+        </div>
 
         <div className="flex items-center justify-end gap-3 pt-2">
           <button
@@ -1024,7 +1060,6 @@ export default function ModelsPage() {
     mutate: mutateTemplates,
   } = useSWR("/api/prompt-templates?includeContent=true", fetcher);
 
-  const { data: placeholderData } = useSWR("/api/prompt-placeholders", fetcher);
 
   const promptTemplates = useMemo(() => templateData?.templates ?? [], [templateData]);
   const defaultTemplateId = useMemo(() => {
@@ -1038,7 +1073,7 @@ export default function ModelsPage() {
   const [errorMessage, setErrorMessage] = useState(null);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("models");
-  
+
   // 提示词模板抽屉状态
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState(null);
@@ -1051,27 +1086,21 @@ export default function ModelsPage() {
   };
 
   const hydrateFormFromTemplate = (templateId) => {
-    if (!templateId) {
-      return {
-        prompt_template_id: CUSTOM_TEMPLATE_VALUE,
-        system_prompt: "",
-        user_prompt: "",
-      };
-    }
     const template = promptTemplates.find((tpl) => tpl.id === templateId);
     return {
-      prompt_template_id: template?.id || CUSTOM_TEMPLATE_VALUE,
+      prompt_template_id: template?.id || "",
       system_prompt: template?.system_prompt || "",
       user_prompt: template?.user_prompt || "",
     };
   };
 
   const openCreate = () => {
-    const templateId = defaultTemplateId || CUSTOM_TEMPLATE_VALUE;
+    const fallbackTemplateId =
+      defaultTemplateId || promptTemplates?.[0]?.id || "";
     setModalState({ open: true, mode: "create" });
     setFormState({
       ...EMPTY_FORM,
-      ...hydrateFormFromTemplate(templateId),
+      ...hydrateFormFromTemplate(fallbackTemplateId),
     });
     setEditingId(null);
     setErrorMessage(null);
@@ -1105,7 +1134,7 @@ export default function ModelsPage() {
       human_review_required: Boolean(model.human_review_required),
       auto_run_enabled: Boolean(model.auto_run_enabled),
       auto_run_interval_minutes: model.auto_run_interval_minutes || 5,
-      prompt_template_id: model.prompt_template_id || CUSTOM_TEMPLATE_VALUE,
+      prompt_template_id: model.prompt_template_id || defaultTemplateId || "",
       system_prompt: model.system_prompt || "",
       user_prompt: model.user_prompt || "",
       display_icon: model.display_icon || DEFAULT_MODEL_ICON,
@@ -1181,13 +1210,12 @@ export default function ModelsPage() {
       payload.api_key = formState.api_key.trim();
     }
 
-    if (formState.prompt_template_id && formState.prompt_template_id !== CUSTOM_TEMPLATE_VALUE) {
-      payload.prompt_template_id = formState.prompt_template_id;
-    } else {
-      payload.prompt_template_id = null;
-      payload.system_prompt = formState.system_prompt;
-      payload.user_prompt = formState.user_prompt;
+    if (!formState.prompt_template_id) {
+      setErrorMessage("请选择提示词模板后再提交");
+      setSaving(false);
+      return;
     }
+    payload.prompt_template_id = formState.prompt_template_id;
 
     const endpoint = isEdit ? `/api/models/${editingId}` : "/api/models";
     const method = isEdit ? "PUT" : "POST";
@@ -1232,41 +1260,41 @@ export default function ModelsPage() {
             返回主界面
           </Link>
           <div className="inline-flex rounded-full bg-gradient-to-br from-slate-100 to-slate-50 p-1.5 text-sm font-semibold shadow-lg shadow-slate-200/50 ring-1 ring-slate-200/50">
-          <button
-            type="button"
-            onClick={() => setTab("models")}
-            className={clsx(
-              "rounded-full px-6 py-2 transition-all duration-300 ease-out",
-              tab === "models"
-                ? "bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/30 scale-105"
-                : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-            )}
-          >
-            <span className="inline-flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-              </svg>
-              模型管理
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("prompts")}
-            className={clsx(
-              "rounded-full px-6 py-2 transition-all duration-300 ease-out",
-              tab === "prompts"
-                ? "bg-gradient-to-br from-purple-500 to-pink-600 text-white shadow-lg shadow-purple-500/30 scale-105"
-                : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-            )}
-          >
-            <span className="inline-flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-              </svg>
-              提示词管理
-            </span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setTab("models")}
+              className={clsx(
+                "rounded-full px-6 py-2 transition-all duration-300 ease-out",
+                tab === "models"
+                  ? "bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/30 scale-105"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              )}
+            >
+              <span className="inline-flex items-center gap-2">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                </svg>
+                模型管理
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("prompts")}
+              className={clsx(
+                "rounded-full px-6 py-2 transition-all duration-300 ease-out",
+                tab === "prompts"
+                  ? "bg-gradient-to-br from-purple-500 to-pink-600 text-white shadow-lg shadow-purple-500/30 scale-105"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              )}
+            >
+              <span className="inline-flex items-center gap-2">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                </svg>
+                提示词管理
+              </span>
+            </button>
+          </div>
         </div>
         {tab === "models" ? (
           <button
@@ -1348,7 +1376,7 @@ export default function ModelsPage() {
       {tab === "prompts" ? (
         <PromptTemplatesPanel
           templates={promptTemplates}
-          placeholders={placeholderData?.placeholders ?? []}
+          placeholders={PLACEHOLDER_LIBRARY}
           loading={templatesLoading}
           error={templateError}
           mutateTemplates={mutateTemplates}

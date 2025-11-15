@@ -36,8 +36,8 @@ import {
   countAgentLogs,
   getMarketSeries,
   getMarketSnapshot,
+  getOpenPositions,
   getRuntimeAccount,
-  getRuntimePositions,
   getTrackedSymbols,
 } from "./dataRepository.js";
 
@@ -302,7 +302,7 @@ export async function buildPositionStateText(modelId) {
   // 并行加载账户和持仓数据
   const [account, positions] = await Promise.all([
     getRuntimeAccount(modelId),
-    getRuntimePositions(modelId),
+    getOpenPositions(modelId),
   ]);
   
   // ------------------------------------------------------------------------
@@ -451,4 +451,3 @@ export async function buildPromptReplacements(model, options = {}) {
     ), // 账户总价值 (2 位小数)
   };
 }
-

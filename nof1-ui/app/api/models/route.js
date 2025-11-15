@@ -54,10 +54,6 @@ export async function POST(request) {
         typeof payload.api_key === "string"
           ? payload.api_key.trim() || null
           : null,
-      system_prompt:
-        typeof payload.system_prompt === "string" ? payload.system_prompt : undefined,
-      user_prompt:
-        typeof payload.user_prompt === "string" ? payload.user_prompt : undefined,
       human_review_required: Boolean(payload.human_review_required),
       prompt_template_id:
         typeof payload.prompt_template_id === "string" && payload.prompt_template_id.trim()

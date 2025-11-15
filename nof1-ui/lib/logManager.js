@@ -21,10 +21,13 @@ const LogLevel = {
 
 // 内存中存储最近的日志 (最多 500 条)
 const MAX_LOGS = 500;
-const logBuffer = [];
-
-// 订阅者列表 (用于 SSE 推送)
-const subscribers = new Set();
+const globalStore = globalThis.__logManagerStore ?? {
+  logBuffer: [],
+  subscribers: new Set(),
+};
+globalThis.__logManagerStore = globalStore;
+const logBuffer = globalStore.logBuffer;
+const subscribers = globalStore.subscribers;
 
 /**
  * 添加日志条目

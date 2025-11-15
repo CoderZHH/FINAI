@@ -38,7 +38,13 @@ import { logger } from "./logManager.js";
  * ============================================================================
  */
 
-/** 默认每 5 秒执行一次 tick（可通过环境变量 AUTO_RUNNER_TICK_MS 覆盖） */
+/**
+ * Auto-runner cadence configuration:
+ * - AUTO_RUNNER_TICK_MS: interval (ms) between scheduler ticks (default 5_000)
+ * - MARKET_LOOP_INTERVAL_MS: interval (ms) between market sync cycles (default 5_000)
+ * - AUTO_RUNNER_DISABLED: set to "true" to disable both loops entirely
+ */
+/** 默认每 5 秒执行一次市场同步和模型调度（可通过环境变量覆盖） */
 const DEFAULT_TICK_MS = Number(process.env.AUTO_RUNNER_TICK_MS ?? 5_000);
 const MARKET_LOOP_INTERVAL_MS = Number(
   process.env.MARKET_LOOP_INTERVAL_MS ?? 5_000,
@@ -70,36 +76,48 @@ const marketLoopState = globalThis.__marketLoop__ ?? {
 
 globalThis.__marketLoop__ = marketLoopState;
 
+const runningModels =
+  globalThis.__autoRunnerRunningModels ?? new Set();
+globalThis.__autoRunnerRunningModels = runningModels;
+
+export function isModelRunning(modelId) {
+  if (!modelId) return false;
+  return runningModels.has(modelId);
+}
+
 async function runMarketSyncCycle() {
   if (marketLoopState.running) return;
   marketLoopState.running = true;
   try {
     const updated = await updateMarketPricesFromBinance();
-    // logger.info("autoRunner", "Market prices updated", {
-    //   symbols_updated: updated,
-    // });
+    logger.info("autoRunner", "Market loop refreshed prices", {
+      symbols_updated: updated,
+      loop: "market",
+    });
 
     const benchmark = await updateBtcBenchmark();
     if (benchmark) {
-      // logger.info("autoRunner", "BTC benchmark updated", {
-      //   equity: benchmark.equity,
-      //   return_percent:
-      //     benchmark.returnPercent != null
-      //       ? benchmark.returnPercent.toFixed(2) + "%"
-      //       : undefined,
-      // });
+      logger.info("autoRunner", "BTC benchmark marked-to-market", {
+        equity: benchmark.equity,
+        return_percent:
+          benchmark.returnPercent != null
+            ? benchmark.returnPercent.toFixed(2) + "%"
+            : undefined,
+      });
     }
 
     const mtmResult = await markToMarketAllModels();
     if (mtmResult?.updated?.length) {
       logger.info("autoRunner", "Mark-to-market applied", {
         models: mtmResult.updated,
+        loop: "market",
       });
     }
     if (mtmResult?.snapshots?.length) {
-      // mtmResult.snapshots.forEach((snapshot) =>
-      //   logger.info("autoRunner", "Equity snapshot", snapshot),
-      // );
+      logger.info("autoRunner", "Equity snapshots captured", {
+        snapshot_count: mtmResult.snapshots.length,
+        loop: "market",
+      });
     }
   } catch (error) {
     logger.warn("autoRunner", "Market sync loop failed", {
@@ -167,13 +185,14 @@ async function tick() {
       if (mtmResult?.updated?.length) {
         logger.info("autoRunner", "Mark-to-market applied", {
           models: mtmResult.updated,
+          loop: "tick",
         });
       }
       if (mtmResult?.snapshots?.length) {
-        // 如果需要，也可以在这里输出每个 snapshot 的详细日志，方便排查
-        // mtmResult.snapshots.forEach((snapshot) =>
-        //   logger.info("autoRunner", "Equity snapshot", snapshot),
-        // );
+        logger.info("autoRunner", "Equity snapshots captured", {
+          snapshot_count: mtmResult.snapshots.length,
+          loop: "tick",
+        });
       }
     } catch (mtmError) {
       logger.warn("autoRunner", "Mark-to-market failed", {
@@ -217,6 +236,14 @@ async function tick() {
       }
 
       // 步骤 5：对该模型执行一次完整的自动决策循环
+      if (runningModels.has(model.model_id)) {
+        logger.info("autoRunner", "Model already running, skipping duplicate run", {
+          model_id: model.model_id,
+        });
+        continue;
+      }
+
+      runningModels.add(model.model_id);
       try {
         const startAt = Date.now();
 
@@ -261,6 +288,8 @@ async function tick() {
             stack: err?.stack,
           },
         );
+      } finally {
+        runningModels.delete(model.model_id);
       }
     }
   } catch (error) {

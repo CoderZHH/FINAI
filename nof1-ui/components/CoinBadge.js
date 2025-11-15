@@ -1,5 +1,7 @@
 "use client";
 
+import { logger } from "@/lib/logManager";
+
 const ICON_MAP = {
   BTC: "/icons/coin/btc.svg",
   ETH: "/icons/coin/eth.svg",
@@ -10,13 +12,14 @@ const ICON_MAP = {
 };
 
 function normalizeSymbol(symbol = "") {
-  return symbol.replace(/USDT$/i, "").toUpperCase();
+  // 移除 USDT 后缀并转换为大写
+  return String(symbol).replace(/USDT$/i, "").toUpperCase();
 }
 
 export default function CoinBadge({ symbol, size = 20, className = "" }) {
   const normalized = normalizeSymbol(symbol);
   const src = ICON_MAP[normalized];
-
+  
   if (src) {
     return (
       <img

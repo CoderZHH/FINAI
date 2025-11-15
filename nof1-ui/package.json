@@ -1,13 +1,14 @@
 {
     "name": "nof1-ui",
     "version": "1.0.0",
+    "type": "module",
     "main": "index.js",
     "scripts": {
-        "dev": "node --env-file=.env.local scripts/reset-db.js && next dev -p 3000",
+        "dev": "node scripts/reset-db.js && next dev -p 3000",
         "build": "next build",
         "start": "next start",
         "lint": "next lint",
-        "seed:static": "node --env-file=.env.local scripts/seed-hyperliquid.js"
+        "seed:static": "node scripts/get_market.js"
     },
     "keywords": [],
     "author": "",

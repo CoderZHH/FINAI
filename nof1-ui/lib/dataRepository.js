@@ -8,11 +8,11 @@ const DEFAULT_SYMBOLS = (() => {
   try {
     return JSON.parse(
       process.env.BINANCE_SYMBOLS ||
-        '["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","DOGEUSDT","XRPUSDT"]'
+        '["BTC","ETH","SOL","BNB","DOGE","XRP"]'
     );
   } catch (err) {
     console.warn("BINANCE_SYMBOLS parse failed, using default symbols.", err);
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT"];
+    return ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
   }
 })();
 
@@ -24,7 +24,7 @@ const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
 function normalizeSymbol(symbol) {
   if (!symbol) return symbol;
-  return symbol.replace(/USDT$/i, "");
+  return String(symbol).toUpperCase().replace(/USDT$/, "");
 }
 
 function ensureMarketSymbol(symbol) {
@@ -64,6 +64,38 @@ function safeTimestamp(dateLike) {
   return Number.isNaN(ts.getTime()) ? Date.now() : ts.getTime();
 }
 
+function sanitizeJsonValue(value, { depth = 0, maxDepth = 20 } = {}) {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  if (depth > maxDepth) return undefined;
+
+  const type = typeof value;
+  if (type === "string" || type === "number" || type === "boolean") {
+    return Number.isNaN(value) ? undefined : value;
+  }
+  if (type === "bigint") {
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber) ? asNumber : value.toString();
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .map((entry) => sanitizeJsonValue(entry, { depth: depth + 1, maxDepth }))
+      .filter((entry) => entry !== undefined);
+    return items;
+  }
+  if (type === "object") {
+    const result = {};
+    Object.entries(value).forEach(([key, entry]) => {
+      const sanitized = sanitizeJsonValue(entry, { depth: depth + 1, maxDepth });
+      if (sanitized !== undefined) {
+        result[key] = sanitized;
+      }
+    });
+    return result;
+  }
+  return undefined;
+}
+
 async function fetchRedisTickers(symbols) {
   const redis = getRedis();
   if (!redis) {
@@ -71,7 +103,12 @@ async function fetchRedisTickers(symbols) {
   }
 
   const redisKeys = symbols.map((symbol) => `prices:${symbol}`);
-  return redis.mget(redisKeys);
+  try {
+    return await redis.mget(redisKeys);
+  } catch (error) {
+    console.warn("[market] Redis ticker fetch failed, falling back to DB prices.", error);
+    return new Array(symbols.length).fill(null);
+  }
 }
 
 async function fetchDbTickers(pool, symbols) {
@@ -167,6 +204,8 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
           is_default: Boolean(row.prompt_template_is_default),
           sample_market_state_text: row.prompt_template_sample_market_state ?? null,
           sample_position_state_text: row.prompt_template_sample_position ?? null,
+          system_prompt: row.prompt_template_system_prompt ?? "",
+          user_prompt: row.prompt_template_user_prompt ?? "",
         }
       : null;
   return {
@@ -175,8 +214,8 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     api_base_url: row.api_base_url ?? "",
     api_key: includeSecrets ? apiKey : "",
     has_api_key: Boolean(apiKey),
-    system_prompt: row.system_prompt ?? "",
-    user_prompt: row.user_prompt ?? "",
+    system_prompt: template?.system_prompt ?? "",
+    user_prompt: template?.user_prompt ?? "",
     human_review_required: Boolean(row.human_review_required ?? false),
     prompt_template_id: row.prompt_template_id ?? null,
     prompt_template: template,
@@ -242,8 +281,8 @@ function mapAccountRow(row) {
     model_id: row.model_id,
     name: row.display_name ?? row.model_id,
     display_name: row.display_name ?? row.model_id,
-    system_prompt: row.system_prompt ?? "",
-    user_prompt: row.user_prompt ?? "",
+    system_prompt: row.template_system_prompt ?? "",
+    user_prompt: row.template_user_prompt ?? "",
     latest_equity: latestEquity,
     pnl_pct: pnlPct,
     sharpe_ratio: toNumber(row.sharpe_ratio ?? 0),
@@ -308,22 +347,15 @@ export async function updateBtcBenchmark() {
   const modelId = BASELINE_MODEL_ID;
 
   try {
-    const positionResult = await pool.query(
-      `SELECT * FROM agent_positions_runtime WHERE model_id = $1 AND symbol = $2`,
-      [modelId, "BTCUSDT"]
-    );
-
-    if (!positionResult.rows.length) {
+    const runtime = await getRuntimeAccount(modelId);
+    const quantity = Number(runtime?.metadata?.benchmark_quantity ?? 0);
+    const entryPrice = Number(runtime?.metadata?.benchmark_entry_price ?? 0);
+    if (!runtime || !quantity || !entryPrice) {
       return null;
     }
-
-    const position = positionResult.rows[0];
-    const entryPrice = Number(position.entry_price ?? 0);
-    const quantity = Number(position.quantity ?? 0);
-
     const priceResult = await pool.query(
       `SELECT price FROM market_prices WHERE symbol = $1`,
-      ["BTCUSDT"]
+      ["BTC"]
     );
     const currentPrice = toNumber(priceResult.rows[0]?.price ?? entryPrice);
 
@@ -331,28 +363,13 @@ export async function updateBtcBenchmark() {
     const unrealizedPnl = currentNotional - entryPrice * quantity;
     const equity = currentNotional;
 
-    await pool.query(
-      `
-      UPDATE agent_positions_runtime
-      SET current_price = $1,
-          notional = $2,
-          unrealized_pnl = $3,
-          updated_at = now()
-      WHERE model_id = $4 AND symbol = $5
-      `,
-      [currentPrice, currentNotional, unrealizedPnl, modelId, "BTCUSDT"]
-    );
-
-    await pool.query(
-      `
-      UPDATE agent_accounts_runtime
-      SET latest_equity = $1,
-          total_unrealized_pnl = $2,
-          updated_at = now()
-      WHERE model_id = $3
-      `,
-      [equity, unrealizedPnl, modelId]
-    );
+    await upsertRuntimeAccount(modelId, {
+      starting_equity: runtime.starting_equity ?? entryPrice * quantity,
+      latest_equity: equity,
+      available_cash: 0,
+      total_unrealized_pnl: unrealizedPnl,
+      metadata: runtime.metadata,
+    });
 
     await appendAccountTimeseries({
       modelId,
@@ -628,7 +645,9 @@ export async function listAgentModels(options = {}) {
       t.placeholder_tokens AS prompt_template_tokens,
       t.is_default AS prompt_template_is_default,
       t.sample_market_state_text AS prompt_template_sample_market_state,
-      t.sample_position_state_text AS prompt_template_sample_position
+      t.sample_position_state_text AS prompt_template_sample_position,
+      t.system_prompt AS prompt_template_system_prompt,
+      t.user_prompt AS prompt_template_user_prompt
     FROM agent_models m
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
     LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
@@ -654,7 +673,9 @@ export async function getAgentModelById(modelId, { includeSecrets = true } = {})
       t.placeholder_tokens AS prompt_template_tokens,
       t.is_default AS prompt_template_is_default,
       t.sample_market_state_text AS prompt_template_sample_market_state,
-      t.sample_position_state_text AS prompt_template_sample_position
+      t.sample_position_state_text AS prompt_template_sample_position,
+      t.system_prompt AS prompt_template_system_prompt,
+      t.user_prompt AS prompt_template_user_prompt
     FROM agent_models m
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
     LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
@@ -690,22 +711,18 @@ export async function createAgentModel(payload) {
     api_base_url,
     api_key,
     human_review_required = false,
-    system_prompt,
-    user_prompt,
     prompt_template_id = null,
     auto_run_enabled = false,
     auto_run_interval_minutes = 5,
+    display_icon = "icon:gpt",
   } = payload;
 
   const template = await resolvePromptTemplate(prompt_template_id);
 
-  const systemPromptValue =
-    typeof system_prompt === "string" ? system_prompt : template.system_prompt ?? "";
-  const userPromptValue =
-    typeof user_prompt === "string" ? user_prompt : template.user_prompt ?? "";
   const sanitizedInterval = Number.isFinite(Number(auto_run_interval_minutes))
     ? Math.max(1, Number(auto_run_interval_minutes))
     : 5;
+  const startingEquity = 10000;
 
   const { rows } = await pool.query(
     `
@@ -715,13 +732,12 @@ export async function createAgentModel(payload) {
       api_base_url,
       api_key,
       human_review_required,
-      system_prompt,
-      user_prompt,
       prompt_template_id,
       auto_run_enabled,
-      auto_run_interval_minutes
+      auto_run_interval_minutes,
+      display_icon
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
     RETURNING *
     `,
     [
@@ -730,13 +746,28 @@ export async function createAgentModel(payload) {
       api_base_url ?? null,
       api_key ?? null,
       human_review_required,
-      systemPromptValue,
-      userPromptValue,
       template.id ?? null,
       Boolean(auto_run_enabled),
       sanitizedInterval,
+      display_icon ?? "icon:gpt",
     ]
   );
+
+  await upsertRuntimeAccount(model_id, {
+    starting_equity: startingEquity,
+    latest_equity: startingEquity,
+    available_cash: startingEquity,
+    total_unrealized_pnl: 0,
+  });
+
+  await appendAccountTimeseries({
+    modelId: model_id,
+    ts: new Date(),
+    equity: startingEquity,
+    cash_available: startingEquity,
+    unrealized_pnl: 0,
+    realized_pnl: 0,
+  });
 
   return mapModelRow(rows[0]);
 }
@@ -747,8 +778,6 @@ export async function updateAgentModel(modelId, updates) {
     display_name: "display_name",
     api_base_url: "api_base_url",
     api_key: "api_key",
-    system_prompt: "system_prompt",
-    user_prompt: "user_prompt",
     human_review_required: "human_review_required",
     prompt_template_id: "prompt_template_id",
     auto_run_enabled: "auto_run_enabled",
@@ -766,12 +795,6 @@ export async function updateAgentModel(modelId, updates) {
         throw new Error("指定的提示词模板不存在。");
       }
       nextUpdates.prompt_template_id = template.id;
-      if (!Object.prototype.hasOwnProperty.call(nextUpdates, "system_prompt")) {
-        nextUpdates.system_prompt = template.system_prompt;
-      }
-      if (!Object.prototype.hasOwnProperty.call(nextUpdates, "user_prompt")) {
-        nextUpdates.user_prompt = template.user_prompt;
-      }
     } else {
       nextUpdates.prompt_template_id = null;
     }
@@ -870,8 +893,6 @@ export async function getAgentAccounts() {
     SELECT
       m.model_id,
       m.display_name,
-      m.system_prompt,
-      m.user_prompt,
       m.human_review_required,
       COALESCE(a.starting_equity, 10000) AS starting_equity,
       COALESCE(a.latest_equity, 10000) AS latest_equity,
@@ -879,9 +900,12 @@ export async function getAgentAccounts() {
       COALESCE(a.total_unrealized_pnl, 0) AS total_unrealized_pnl,
       COALESCE(a.sharpe_ratio, 0) AS sharpe_ratio,
       COALESCE(a.win_rate, 0) AS win_rate,
-      COALESCE(a.trade_count, 0) AS trade_count
+      COALESCE(a.trade_count, 0) AS trade_count,
+      t.system_prompt AS template_system_prompt,
+      t.user_prompt AS template_user_prompt
     FROM agent_models m
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
+    LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
     ORDER BY m.display_name, m.model_id
     `
   );
@@ -1128,26 +1152,6 @@ export async function deletePromptTemplate(templateId) {
   return true;
 }
 
-export async function listPromptPlaceholders() {
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `
-    SELECT token, label, description, sample_value, category, created_at, updated_at
-    FROM prompt_placeholders
-    ORDER BY COALESCE(category, 'general'), token
-    `
-  );
-  return rows.map((row) => ({
-    token: row.token,
-    label: row.label ?? row.token,
-    description: row.description ?? "",
-    sample_value: row.sample_value ?? "",
-    category: row.category ?? "general",
-    created_at: row.created_at ? safeTimestamp(row.created_at) : null,
-    updated_at: row.updated_at ? safeTimestamp(row.updated_at) : null,
-  }));
-}
-
 export async function getSinceInceptionValues() {
   const pool = getPool();
   const models = await listAgentModels({ includeDisabled: true, includeSecrets: false });
@@ -1269,91 +1273,18 @@ export async function getPositionsSnapshot() {
   if (!accounts.length) return [];
 
   const modelIds = accounts.map((account) => account.model_id);
-  const { rows } = await pool.query(
-    `
-    SELECT
-      model_id,
-      symbol,
-      side,
-      leverage,
-      entry_price,
-      current_price,
-      quantity,
-      notional,
-      notional_usd,
-      unrealized_pnl,
-      take_profit,
-      stop_loss,
-      liquidation_price,
-      sl_oid,
-      tp_oid,
-      entry_oid,
-      confidence,
-      risk_usd,
-      wait_for_fill,
-      holding_seconds,
-      exit_plan,
-      updated_at
-    FROM agent_positions_runtime
-    WHERE model_id = ANY($1::text[])
-    ORDER BY model_id, symbol
-    `,
-    [modelIds]
-  );
-
-  const marketSnapshot = await getMarketSnapshot();
-
-  const positionsByModel = rows.reduce((acc, row) => {
-    const key = row.model_id;
-    if (!acc[key]) acc[key] = [];
-
-    const rawSymbol = row.symbol;
-    const normalizedSymbol = normalizeSymbol(rawSymbol);
-    const ticker = marketSnapshot.prices[normalizedSymbol];
-    const lastPrice = ticker ? toNumber(ticker.price) : toNumber(row.current_price ?? row.entry_price);
-
-    const side = String(row.side || "LONG").toUpperCase();
-    const entryPrice = toNumber(row.entry_price ?? lastPrice);
-    const quantity = toNumber(row.quantity ?? 0);
-    const leverage = Number(row.leverage ?? 1);
-    const notionalUsd = toNumber(row.notional ?? entryPrice * quantity * leverage);
-    const notionalUsdOverride =
-      row.notional_usd != null ? toNumber(row.notional_usd) : notionalUsd;
-
-    const pnl = row.unrealized_pnl != null
-      ? toNumber(row.unrealized_pnl)
-      : (lastPrice - entryPrice) * quantity * (side === "SHORT" ? -1 : 1) * leverage;
-
-    acc[key].push({
-      symbol: normalizedSymbol,
-      side,
-      leverage,
-      quantity,
-      notional_usd: notionalUsdOverride,
-      entry_price: entryPrice,
-      current_price: lastPrice,
-      unrealized_pnl: pnl,
-      take_profit: row.take_profit != null ? toNumber(row.take_profit) : null,
-      stop_loss: row.stop_loss != null ? toNumber(row.stop_loss) : null,
-      exit_plan: row.exit_plan ?? {},
-      holding_seconds: Number(row.holding_seconds ?? 0),
-      updated_at: safeTimestamp(row.updated_at),
-      liquidation_price:
-        row.liquidation_price != null ? toNumber(row.liquidation_price) : null,
-      confidence: row.confidence != null ? toNumber(row.confidence) : null,
-      risk_usd: row.risk_usd != null ? toNumber(row.risk_usd) : null,
-      wait_for_fill: Boolean(row.wait_for_fill ?? false),
-      sl_oid: row.sl_oid != null ? row.sl_oid : null,
-      tp_oid: row.tp_oid != null ? row.tp_oid : null,
-      entry_oid: row.entry_oid != null ? row.entry_oid : null,
-    });
-    return acc;
-  }, {});
+  const positionsByModel = await getOpenPositionsGrouped(modelIds);
 
   return accounts.map((account) => {
-    const positions = positionsByModel[account.model_id] ?? [];
-    const totalUnrealized = positions.reduce((sum, pos) => sum + pos.unrealized_pnl, 0);
-    const totalNotional = positions.reduce((sum, pos) => sum + pos.notional_usd, 0);
+    const positions = positionsByModel.get(account.model_id) ?? [];
+    const totalUnrealized = positions.reduce(
+      (sum, pos) => sum + (pos.unrealized_pnl ?? 0),
+      0
+    );
+    const totalNotional = positions.reduce(
+      (sum, pos) => sum + (pos.notional_usd ?? 0),
+      0
+    );
 
     return {
       model_id: account.model_id,
@@ -1363,7 +1294,9 @@ export async function getPositionsSnapshot() {
       cum_pnl_pct: account.pnl_pct,
       sharpe_ratio: account.sharpe_ratio,
       available_cash: account.available_cash ?? Math.max(0, account.latest_equity - totalNotional),
-      positions: Object.fromEntries(positions.map((pos) => [pos.symbol, pos])),
+      positions: Object.fromEntries(
+        positions.map((pos) => [pos.id ?? `${pos.symbol}-${pos.entry_time ?? Date.now()}`, pos])
+      ),
     };
   });
 }
@@ -1372,112 +1305,42 @@ export async function markToMarketAllModels() {
   const accounts = await getAgentAccounts();
   if (!accounts.length) return { updated: [] };
 
-  const tradable = accounts.filter((account) => account.model_id !== "btc_benchmark");
+  const tradable = accounts.filter((account) => account.model_id !== BASELINE_MODEL_ID);
   if (!tradable.length) {
     return { updated: [], snapshots: [] };
   }
 
   const modelIds = tradable.map((account) => account.model_id);
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `
-    SELECT
-      id,
-      model_id,
-      symbol,
-      side,
-      leverage,
-      entry_price,
-      current_price,
-      quantity
-    FROM agent_positions_runtime
-    WHERE model_id = ANY($1::text[])
-    `,
-    [modelIds]
-  );
-
-  const marketSnapshot = await getMarketSnapshot();
-  const summaryByModel = new Map();
-
-  for (const row of rows) {
-    const normalizedSymbol = normalizeSymbol(row.symbol);
-    const ticker = marketSnapshot.prices[normalizedSymbol];
-    const lastPrice = ticker
-      ? toNumber(ticker.price)
-      : toNumber(row.current_price ?? row.entry_price ?? 0);
-    const entryPrice = toNumber(row.entry_price ?? lastPrice);
-    const quantity = toNumber(row.quantity ?? 0);
-    if (!quantity || !lastPrice) continue;
-
-    const leverage = Number(row.leverage ?? 1);
-    const side = String(row.side || "LONG").toUpperCase();
-    const direction = side === "SHORT" ? -1 : 1;
-    const notional = lastPrice * quantity * leverage;
-    const pnl = (lastPrice - entryPrice) * quantity * leverage * direction;
-
-    await pool.query(
-      `
-      UPDATE agent_positions_runtime
-      SET current_price = $1,
-          notional = $2,
-          unrealized_pnl = $3,
-          updated_at = now()
-      WHERE id = $4
-      `,
-      [lastPrice, notional, pnl, row.id]
-    );
-
-    if (!summaryByModel.has(row.model_id)) {
-      summaryByModel.set(row.model_id, { totalNotional: 0, totalUnrealized: 0 });
-    }
-    const summary = summaryByModel.get(row.model_id);
-    summary.totalNotional += notional;
-    summary.totalUnrealized += pnl;
-  }
-
-  const { rows: seriesRows } = await pool.query(
-    `
-    SELECT model_id, COUNT(*)::int AS count
-    FROM agent_account_timeseries
-    WHERE model_id = ANY($1::text[])
-    GROUP BY model_id
-    `,
-    [modelIds]
-  );
-  const seriesCountMap = new Map(
-    seriesRows.map((row) => [row.model_id, Number(row.count ?? 0)])
-  );
+  const positionsByModel = await getOpenPositionsGrouped(modelIds);
 
   const updatedModels = [];
   const equitySnapshots = [];
   const now = new Date();
 
   for (const account of tradable) {
-    const summary =
-      summaryByModel.get(account.model_id) ?? {
-        totalNotional: 0,
-        totalUnrealized: 0,
-      };
+    const modelPositions = positionsByModel.get(account.model_id) ?? [];
+    const totalUnrealized = modelPositions.reduce(
+      (sum, pos) => sum + (pos.unrealized_pnl ?? 0),
+      0
+    );
+    const positionsValue = modelPositions.reduce(
+      (sum, pos) => sum + (pos.current_price ?? 0) * (pos.quantity ?? 0),
+      0
+    );
     const cashBalance = toNumber(
       account.available_cash ??
         account.latest_equity ??
         account.starting_equity ??
         10000
     );
-    const latestEquity = cashBalance + summary.totalUnrealized;
+    const latestEquity = cashBalance + positionsValue;
     const previousEquity = toNumber(account.latest_equity ?? cashBalance);
-    const previousUnrealized = toNumber(account.total_unrealized_pnl ?? 0);
-    const hasSeries = (seriesCountMap.get(account.model_id) ?? 0) > 0;
-    const equityChanged =
-      !hasSeries ||
-      Math.abs(latestEquity - previousEquity) > 0.01 ||
-      Math.abs(summary.totalUnrealized - previousUnrealized) > 0.01;
 
     await upsertRuntimeAccount(account.model_id, {
       starting_equity: account.starting_equity,
       latest_equity: latestEquity,
       available_cash: cashBalance,
-      total_unrealized_pnl: summary.totalUnrealized,
+      total_unrealized_pnl: totalUnrealized,
       trade_count: account.total_trades ?? 0,
       sharpe_ratio: account.sharpe_ratio,
       win_rate: account.win_rate,
@@ -1487,37 +1350,35 @@ export async function markToMarketAllModels() {
       model_id: account.model_id,
       latest_equity: latestEquity,
       cash_available: cashBalance,
-      total_unrealized_pnl: summary.totalUnrealized,
+      total_unrealized_pnl: totalUnrealized,
       timestamp: now.getTime(),
     });
 
-    if (equityChanged) {
-      await appendAccountTimeseries({
-        modelId: account.model_id,
-        ts: now,
-        equity: latestEquity,
-        cash_available: cashBalance,
-        unrealized_pnl: summary.totalUnrealized,
-        realized_pnl: null,
-        sharpe: account.sharpe_ratio,
-        win_rate: account.win_rate,
-      });
-      updatedModels.push(account.model_id);
-      seriesCountMap.set(
-        account.model_id,
-        (seriesCountMap.get(account.model_id) ?? 0) + 1
-      );
-    }
+    await appendAccountTimeseries({
+      modelId: account.model_id,
+      ts: now,
+      equity: latestEquity,
+      cash_available: cashBalance,
+      unrealized_pnl: totalUnrealized,
+      realized_pnl: previousEquity != null ? latestEquity - previousEquity - totalUnrealized : null,
+      sharpe: account.sharpe_ratio,
+      win_rate: account.win_rate,
+    });
+    updatedModels.push(account.model_id);
   }
 
   return { updated: updatedModels, snapshots: equitySnapshots };
 }
 
+/**
+ * Fetch recent log entries for UI timelines / log console.
+ * agent_logs acts as the unified audit trail (pending decisions, approvals, executions).
+ */
 export async function getAgentLogs(limit = 20) {
   const pool = getPool();
   const { rows } = await pool.query(
     `
-    SELECT id, model_id, public_message, cot_trace_summary, prompt_text, response_text, response_json, created_at
+    SELECT id, model_id, public_message, cot_trace_summary, prompt_text, response_text, response_json, reasoning_content, created_at
     FROM agent_logs
     ORDER BY created_at DESC
     LIMIT $1
@@ -1534,6 +1395,7 @@ export async function getAgentLogs(limit = 20) {
     prompt_text: row.prompt_text ?? "",
     response_text: row.response_text ?? "",
     response_json: row.response_json ?? {},
+    reasoning_content: row.reasoning_content ?? "",
   }));
 }
 
@@ -1637,75 +1499,67 @@ export async function getTradesHistory({ page = 1, pageSize = 50, from, to }) {
   };
 }
 
+function normalizePendingDecision(row) {
+  const blob = row.decision_blob ?? {};
+  const insertedAt = row.created_at ? safeTimestamp(row.created_at) : null;
+  return {
+    id: row.id,
+    model_id: row.model_id,
+    model_name: row.display_name ?? row.model_id,
+    decision_blob: blob,
+    inserted_at: insertedAt,
+    status: row.review_status ?? "logged",
+    decision_type: blob.decision_type ?? blob.source ?? null,
+    target_symbol: blob.target_symbol ?? null,
+    auto_executed: Boolean(
+      blob.auto_executed ?? blob.autoApproved ?? row.review_status === "approved"
+    ),
+    reasoning_content: row.reasoning_content ?? null,
+  };
+}
+
+/**
+ * List agent_logs entries waiting for human review (review_status='pending').
+ * Joined with agent_models to expose the display name for UI.
+ */
 export async function getPendingDecisions() {
   const pool = getPool();
   const { rows } = await pool.query(
     `
     SELECT
-      pd.id,
-      pd.model_id,
-      m.display_name,
-      pd.decision_blob,
-      pd.inserted_at,
-      pd.status,
-      pd.decision_type,
-      pd.target_symbol,
-      pd.auto_executed
-    FROM pending_decisions pd
-    LEFT JOIN agent_models m ON m.model_id = pd.model_id
-    WHERE status = 'pending'
-    ORDER BY inserted_at DESC
+      l.*,
+      m.display_name
+    FROM agent_logs l
+    LEFT JOIN agent_models m ON m.model_id = l.model_id
+    WHERE l.review_status = 'pending'
+    ORDER BY l.created_at DESC
     `
   );
 
-  return rows.map((row) => ({
-    id: row.id,
-      model_id: row.model_id,
-      model_name: row.display_name ?? row.model_id,
-      decision_blob: row.decision_blob ?? {},
-      inserted_at: safeTimestamp(row.inserted_at),
-      status: row.status,
-      decision_type: row.decision_type ?? null,
-      target_symbol: row.target_symbol ?? null,
-      auto_executed: Boolean(row.auto_executed ?? false),
-    }));
-  }
+  return rows.map(normalizePendingDecision);
+}
 
-  export async function getPendingDecisionById(decisionId) {
-    const pool = getPool();
+export async function getPendingDecisionById(decisionId) {
+  const pool = getPool();
   const { rows } = await pool.query(
     `
     SELECT
-      pd.id,
-        pd.model_id,
-        m.display_name,
-        pd.decision_blob,
-        pd.inserted_at,
-        pd.status,
-        pd.decision_type,
-        pd.target_symbol,
-        pd.auto_executed
-      FROM pending_decisions pd
-      LEFT JOIN agent_models m ON m.model_id = pd.model_id
-      WHERE id = $1
-      `,
-      [decisionId]
+      l.*,
+      m.display_name
+    FROM agent_logs l
+    LEFT JOIN agent_models m ON m.model_id = l.model_id
+    WHERE l.id = $1
+    `,
+    [decisionId]
   );
   if (!rows.length) return null;
-  const row = rows[0];
-  return {
-    id: row.id,
-    model_id: row.model_id,
-    model_name: row.display_name ?? row.model_id,
-    decision_blob: row.decision_blob ?? {},
-    inserted_at: safeTimestamp(row.inserted_at),
-    status: row.status,
-    decision_type: row.decision_type ?? null,
-    target_symbol: row.target_symbol ?? null,
-    auto_executed: Boolean(row.auto_executed ?? false),
-  };
+  return normalizePendingDecision(rows[0]);
 }
 
+/**
+ * Persist an LLM decision payload into agent_logs for later approval/execution.
+ * Stores prompt/response snapshots and ties the row to an optional cycle_id.
+ */
 export async function createPendingDecision(
   modelId,
   decisionBlob,
@@ -1714,42 +1568,110 @@ export async function createPendingDecision(
   options = {}
 ) {
   const pool = getPool();
-  const {
-    decision_type = null,
-    target_symbol = null,
-    auto_executed = false,
-  } = options ?? {};
+  const mergedBlob = {
+    ...(decisionBlob ?? {}),
+    decision_type: options.decision_type ?? decisionBlob?.decision_type ?? null,
+    target_symbol: options.target_symbol ?? decisionBlob?.target_symbol ?? null,
+    auto_executed: options.auto_executed ?? decisionBlob?.auto_executed ?? false,
+  };
+  const responseJson =
+    mergedBlob.response_json ?? mergedBlob.decisions ?? decisionBlob?.response_json ?? null;
+  const sanitizedBlob = sanitizeJsonValue(mergedBlob) ?? {};
+  const sanitizedResponse =
+    responseJson != null ? sanitizeJsonValue(responseJson) : null;
+  const decisionBlobParam = JSON.stringify(sanitizedBlob);
+  const responseJsonParam =
+    sanitizedResponse != null ? JSON.stringify(sanitizedResponse) : null;
+  const cycleId =
+    options.cycle_id != null && Number.isFinite(Number(options.cycle_id))
+      ? Number(options.cycle_id)
+      : null;
+  const reasoningContent = options.reasoning_content ?? mergedBlob.reasoning ?? null;
   const { rows } = await pool.query(
     `
-    INSERT INTO pending_decisions (
+    INSERT INTO agent_logs (
       model_id,
+      public_message,
+      cot_trace_summary,
+      prompt_text,
+      response_text,
+      response_json,
       decision_blob,
-      status,
-      inserted_at,
-      decision_type,
-      target_symbol,
-      auto_executed
+      reasoning_content,
+      cycle_id,
+      review_status,
+      created_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING id, model_id, decision_blob, inserted_at, status, decision_type, target_symbol, auto_executed
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    RETURNING
+      *,
+      (SELECT display_name FROM agent_models WHERE model_id = agent_logs.model_id) AS display_name
     `,
-    [modelId, decisionBlob, status, insertedAt, decision_type, target_symbol, auto_executed]
+    [
+      modelId,
+      options.public_message ?? "Decision requires human approval.",
+      options.cot_trace_summary ?? "Pending review",
+      mergedBlob.prompt_text ?? null,
+      mergedBlob.response_text ?? null,
+      responseJsonParam ?? null,
+      decisionBlobParam,
+      reasoningContent ?? null,
+      cycleId,
+      status,
+      insertedAt instanceof Date ? insertedAt : new Date(insertedAt),
+    ]
   );
-  return rows[0];
+  return normalizePendingDecision(rows[0]);
 }
 
-export async function updatePendingDecisionStatus(decisionId, status) {
+/**
+ * Update review_status (approved/rejected) for a pending log entry.
+ * Also stamps reviewed_at for audit purposes and returns normalized row.
+ */
+export async function updatePendingDecisionStatus(decisionId, status, updates = {}) {
   const pool = getPool();
+  const sanitizedResponse =
+    updates.response_json != null ? sanitizeJsonValue(updates.response_json) : null;
+  const responseJsonParam =
+    sanitizedResponse != null ? JSON.stringify(sanitizedResponse) : null;
+  const sanitizedBlob =
+    updates.decision_blob != null ? sanitizeJsonValue(updates.decision_blob) : null;
+  const decisionBlobParam =
+    sanitizedBlob != null ? JSON.stringify(sanitizedBlob) : null;
+  const reasoningContent =
+    updates.reasoning_content != null ? updates.reasoning_content : null;
   const { rows } = await pool.query(
     `
-    UPDATE pending_decisions
-    SET status = $2
+    UPDATE agent_logs
+    SET review_status = $2,
+        reviewed_at = now(),
+        public_message = COALESCE($3, public_message),
+        cot_trace_summary = COALESCE($4, cot_trace_summary),
+        account_value_snapshot = COALESCE($5, account_value_snapshot),
+        sharpe_snapshot = COALESCE($6, sharpe_snapshot),
+        response_json = COALESCE($7, response_json),
+        decision_blob = COALESCE($8, decision_blob),
+        reasoning_content = COALESCE($9, reasoning_content)
     WHERE id = $1
-    RETURNING id, model_id, decision_blob, inserted_at, status, decision_type, target_symbol, auto_executed
+    RETURNING
+      *,
+      (SELECT display_name FROM agent_models WHERE model_id = agent_logs.model_id) AS display_name
     `,
-    [decisionId, status]
+    [
+      decisionId,
+      status,
+      updates.public_message ?? null,
+      updates.cot_trace_summary ?? null,
+      updates.account_value_snapshot != null ? toNumber(updates.account_value_snapshot) : null,
+      updates.sharpe_snapshot != null ? toNumber(updates.sharpe_snapshot) : null,
+      responseJsonParam,
+      decisionBlobParam,
+      reasoningContent,
+    ]
   );
-  return rows[0] ?? null;
+  if (!rows.length) return null;
+
+  return normalizePendingDecision(rows[0]);
 }
 
 export async function listEnabledAgentModels() {
@@ -1769,6 +1691,7 @@ export async function getRuntimeAccount(modelId) {
       sharpe_ratio,
       win_rate,
       trade_count,
+      metadata,
       updated_at
     FROM agent_accounts_runtime
     WHERE model_id = $1
@@ -1787,6 +1710,7 @@ export async function getRuntimeAccount(modelId) {
     win_rate: toNumber(row.win_rate ?? 0),
     trade_count: Number(row.trade_count ?? 0),
     updated_at: safeTimestamp(row.updated_at),
+    metadata: row.metadata ?? {},
   };
 }
 
@@ -1799,6 +1723,14 @@ export async function upsertRuntimeAccount(modelId, payload) {
   const sharpe = toNumber(payload.sharpe_ratio ?? 0);
   const winRate = toNumber(payload.win_rate ?? 0);
   const tradeCount = Number(payload.trade_count ?? 0);
+  const metadata =
+    payload.metadata !== undefined ? payload.metadata : undefined;
+  const metadataValue =
+    metadata === undefined ? undefined : metadata ?? null;
+  const metadataJson =
+    metadataValue === undefined || metadataValue === null
+      ? null
+      : JSON.stringify(metadataValue);
 
   await pool.query(
     `
@@ -1811,8 +1743,9 @@ export async function upsertRuntimeAccount(modelId, payload) {
       sharpe_ratio,
       win_rate,
       trade_count,
+      metadata,
       updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
     ON CONFLICT (model_id) DO UPDATE SET
       latest_equity = EXCLUDED.latest_equity,
       available_cash = EXCLUDED.available_cash,
@@ -1820,6 +1753,7 @@ export async function upsertRuntimeAccount(modelId, payload) {
       sharpe_ratio = EXCLUDED.sharpe_ratio,
       win_rate = EXCLUDED.win_rate,
       trade_count = EXCLUDED.trade_count,
+      metadata = COALESCE(EXCLUDED.metadata, agent_accounts_runtime.metadata),
       updated_at = EXCLUDED.updated_at
     `,
     [
@@ -1831,6 +1765,7 @@ export async function upsertRuntimeAccount(modelId, payload) {
       sharpe,
       winRate,
       tradeCount,
+      metadataJson,
     ]
   );
 }
@@ -1880,134 +1815,6 @@ export async function appendAccountTimeseries(entry) {
   );
 }
 
-export async function getRuntimePositions(modelId) {
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `
-    SELECT
-      id,
-      model_id,
-      symbol,
-      side,
-      leverage,
-      entry_price,
-      current_price,
-      quantity,
-      notional,
-      notional_usd,
-      unrealized_pnl,
-      take_profit,
-      stop_loss,
-      liquidation_price,
-      sl_oid,
-      tp_oid,
-      entry_oid,
-      confidence,
-      risk_usd,
-      wait_for_fill,
-      holding_seconds,
-      exit_plan,
-      updated_at
-    FROM agent_positions_runtime
-    WHERE model_id = $1
-    `,
-    [modelId]
-  );
-
-  return rows.map((row) => ({
-    id: row.id,
-    model_id: row.model_id,
-    symbol: row.symbol,
-    side: row.side,
-    leverage: Number(row.leverage ?? 0),
-    entry_price: toNumber(row.entry_price ?? 0),
-    current_price: toNumber(row.current_price ?? 0),
-    quantity: toNumber(row.quantity ?? 0),
-    notional: toNumber(row.notional ?? 0),
-    notional_usd: row.notional_usd != null ? toNumber(row.notional_usd) : toNumber(row.notional ?? 0),
-    unrealized_pnl: toNumber(row.unrealized_pnl ?? 0),
-    take_profit: row.take_profit != null ? toNumber(row.take_profit) : null,
-    stop_loss: row.stop_loss != null ? toNumber(row.stop_loss) : null,
-    liquidation_price: row.liquidation_price != null ? toNumber(row.liquidation_price) : null,
-    sl_oid: row.sl_oid ?? null,
-    tp_oid: row.tp_oid ?? null,
-    entry_oid: row.entry_oid ?? null,
-    confidence: row.confidence != null ? toNumber(row.confidence) : null,
-    risk_usd: row.risk_usd != null ? toNumber(row.risk_usd) : null,
-    wait_for_fill: Boolean(row.wait_for_fill ?? false),
-    holding_seconds: Number(row.holding_seconds ?? 0),
-    exit_plan: row.exit_plan ?? {},
-    updated_at: safeTimestamp(row.updated_at),
-  }));
-}
-
-export async function upsertRuntimePosition(modelId, payload) {
-  const pool = getPool();
-  const symbol = payload.symbol;
-  if (!symbol) {
-    throw new Error("Position symbol is required");
-  }
-
-  await pool.query(
-    `
-    INSERT INTO agent_positions_runtime (
-      model_id,
-      symbol,
-      side,
-      leverage,
-      entry_price,
-      current_price,
-      quantity,
-      notional,
-      unrealized_pnl,
-      take_profit,
-      stop_loss,
-      holding_seconds,
-      exit_plan,
-      updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
-    ON CONFLICT (model_id, symbol) DO UPDATE SET
-      side = EXCLUDED.side,
-      leverage = EXCLUDED.leverage,
-      entry_price = EXCLUDED.entry_price,
-      current_price = EXCLUDED.current_price,
-      quantity = EXCLUDED.quantity,
-      notional = EXCLUDED.notional,
-      unrealized_pnl = EXCLUDED.unrealized_pnl,
-      take_profit = EXCLUDED.take_profit,
-      stop_loss = EXCLUDED.stop_loss,
-      holding_seconds = EXCLUDED.holding_seconds,
-      exit_plan = EXCLUDED.exit_plan,
-      updated_at = EXCLUDED.updated_at
-    `,
-    [
-      modelId,
-      symbol,
-      payload.side,
-      Number(payload.leverage ?? 1),
-      toNumber(payload.entry_price ?? 0),
-      toNumber(payload.current_price ?? payload.entry_price ?? 0),
-      toNumber(payload.quantity ?? 0),
-      toNumber(payload.notional ?? 0),
-      toNumber(payload.unrealized_pnl ?? 0),
-      payload.take_profit != null ? toNumber(payload.take_profit) : null,
-      payload.stop_loss != null ? toNumber(payload.stop_loss) : null,
-      Number(payload.holding_seconds ?? 0),
-      payload.exit_plan ?? {},
-    ]
-  );
-}
-
-export async function deleteRuntimePosition(modelId, symbol) {
-  const pool = getPool();
-  await pool.query(
-    `
-    DELETE FROM agent_positions_runtime
-    WHERE model_id = $1 AND symbol = $2
-    `,
-    [modelId, symbol]
-  );
-}
 
 export async function insertTrade(trade) {
   const pool = getPool();
@@ -2043,6 +1850,13 @@ export async function insertTrade(trade) {
   const exitTime = trade.exit_time ? new Date(trade.exit_time) : null;
   const createdAt = trade.created_at ? new Date(trade.created_at) : entryTime;
   const decisionSource = trade.decision_source ?? trade.source ?? "ai_auto";
+  const rawExitPlan = trade.exit_plan ?? trade.plan ?? {};
+  const takeProfitValue =
+    trade.take_profit ?? trade.profit_target ?? rawExitPlan.profit_target ?? null;
+  const stopLossValue =
+    trade.stop_loss ?? rawExitPlan.stop_loss ?? null;
+  const takeProfit = takeProfitValue != null ? toNumber(takeProfitValue) : null;
+  const stopLoss = stopLossValue != null ? toNumber(stopLossValue) : null;
 
   await pool.query(
     `
@@ -2062,6 +1876,8 @@ export async function insertTrade(trade) {
       holding_time,
       realized_net_pnl,
       decision_source,
+      take_profit,
+      stop_loss,
       exit_plan,
       order_id,
       action,
@@ -2069,7 +1885,7 @@ export async function insertTrade(trade) {
       cycle_id,
       created_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
     `,
     [
       modelId,
@@ -2087,7 +1903,9 @@ export async function insertTrade(trade) {
       trade.holding_time ?? null,
       trade.realized_net_pnl != null ? toNumber(trade.realized_net_pnl) : null,
       decisionSource,
-      trade.exit_plan ?? trade.plan ?? {},
+      takeProfit,
+      stopLoss,
+      rawExitPlan,
       trade.order_id ?? trade.orderId ?? null,
       trade.action ?? null,
       trade.reason ?? null,
@@ -2095,6 +1913,150 @@ export async function insertTrade(trade) {
       createdAt,
     ]
   );
+}
+
+function mapTradeRowToPosition(row, ticker) {
+  const symbol = normalizeSymbol(row.symbol);
+  const entryPrice = toNumber(row.entry_price ?? ticker?.price ?? 0);
+  const currentPrice = ticker ? toNumber(ticker.price) : entryPrice;
+  const quantity = toNumber(row.quantity ?? 0);
+  const leverage = Number(row.leverage ?? 1);
+  const side = String(row.side ?? "LONG").toUpperCase();
+  const notionalUsd =
+    row.notional_usd != null ? toNumber(row.notional_usd) : entryPrice * quantity;
+  const multiplier = side === "SHORT" ? -1 : 1;
+  const unrealizedPnl = (currentPrice - entryPrice) * quantity * multiplier * leverage;
+  const entryTime = row.entry_time ? safeTimestamp(row.entry_time) : null;
+  const holdingSeconds =
+    entryTime != null ? Math.floor((Date.now() - entryTime) / 1000) : null;
+
+  return {
+    id: row.id,
+    model_id: row.model_id,
+    symbol,
+    side,
+    leverage,
+    quantity,
+    entry_price: entryPrice,
+    current_price: currentPrice,
+    notional_usd: notionalUsd,
+    unrealized_pnl: unrealizedPnl,
+    take_profit: row.take_profit != null ? toNumber(row.take_profit) : null,
+    stop_loss: row.stop_loss != null ? toNumber(row.stop_loss) : null,
+    exit_plan: row.exit_plan ?? {},
+    holding_seconds: holdingSeconds,
+    entry_time: entryTime,
+    updated_at: safeTimestamp(row.created_at),
+    decision_source: row.decision_source ?? null,
+    risk_usd: row.exit_plan?.risk_usd ?? null,
+  };
+}
+
+export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT id, side, entry_price, quantity, leverage, entry_time, notional_usd
+    FROM trades
+    WHERE model_id = $1 AND symbol = $2 AND exit_time IS NULL
+    ORDER BY entry_time ASC
+    `,
+    [modelId, symbol]
+  );
+  if (!rows.length) {
+    return { closed: 0, realizedPnl: 0 };
+  }
+
+  const now = new Date();
+  let realized = 0;
+  let releasedNotional = 0;
+
+  for (const row of rows) {
+    const entryPrice = toNumber(row.entry_price ?? exitPrice);
+    const qty = toNumber(row.quantity ?? 0);
+    const leverage = Number(row.leverage ?? 1);
+    const direction = String(row.side ?? "LONG").toUpperCase() === "SHORT" ? -1 : 1;
+    const pnl = (exitPrice - entryPrice) * qty * leverage * direction;
+    const notional =
+      row.notional_usd != null ? toNumber(row.notional_usd) : entryPrice * qty;
+    const holdingMs = row.entry_time
+      ? Math.max(0, now.getTime() - row.entry_time.getTime())
+      : 0;
+    realized += pnl;
+    releasedNotional += notional;
+
+    await pool.query(
+      `
+      UPDATE trades
+      SET exit_price = $1,
+          exit_time = $2,
+          holding_time = $3,
+          realized_net_pnl = $4
+      WHERE id = $5
+      `,
+      [exitPrice, now, Math.floor(holdingMs / 1000), pnl, row.id]
+    );
+  }
+
+  return { closed: rows.length, realizedPnl: realized, releasedNotional };
+}
+
+async function getOpenPositionsGrouped(modelIds) {
+  if (!modelIds.length) return new Map();
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT
+      id,
+      model_id,
+      symbol,
+      side,
+      leverage,
+      quantity,
+      entry_price,
+      notional_usd,
+      take_profit,
+      stop_loss,
+      exit_plan,
+      decision_source,
+      entry_time,
+      created_at
+    FROM trades
+    WHERE model_id = ANY($1::text[])
+      AND exit_time IS NULL
+    ORDER BY model_id, entry_time
+    `,
+    [modelIds]
+  );
+
+  if (!rows.length) {
+    return new Map(modelIds.map((id) => [id, []]));
+  }
+
+  const snapshot = await getMarketSnapshot();
+  const grouped = new Map();
+
+  rows.forEach((row) => {
+    const ticker = snapshot.prices[normalizeSymbol(row.symbol)] ?? null;
+    const position = mapTradeRowToPosition(row, ticker);
+    if (!grouped.has(row.model_id)) {
+      grouped.set(row.model_id, []);
+    }
+    grouped.get(row.model_id).push(position);
+  });
+
+  modelIds.forEach((id) => {
+    if (!grouped.has(id)) {
+      grouped.set(id, []);
+    }
+  });
+
+  return grouped;
+}
+
+export async function getOpenPositions(modelId) {
+  const grouped = await getOpenPositionsGrouped([modelId]);
+  return grouped.get(modelId) ?? [];
 }
 
 export async function insertAgentLog(modelId, publicMessage, cotTraceSummary, options = {}) {
@@ -2108,8 +2070,22 @@ export async function insertAgentLog(modelId, publicMessage, cotTraceSummary, op
     cycleId,
     account_value_snapshot,
     sharpe_snapshot,
+    decision_blob,
+    review_status = "logged",
+    review_notes = null,
+    reviewed_at = null,
+    reasoning_content = null,
   } = options;
   const createdAt = created_at ? new Date(created_at) : new Date();
+  const sanitizedResponse =
+    response_json != null ? sanitizeJsonValue(response_json) : null;
+  const sanitizedBlob =
+    decision_blob != null ? sanitizeJsonValue(decision_blob) : null;
+  const responseJsonParam =
+    sanitizedResponse != null ? JSON.stringify(sanitizedResponse) : null;
+  const decisionBlobParam =
+    sanitizedBlob != null ? JSON.stringify(sanitizedBlob) : null;
+  const reasoningContent = reasoning_content ?? null;
 
   await pool.query(
     `
@@ -2123,9 +2099,14 @@ export async function insertAgentLog(modelId, publicMessage, cotTraceSummary, op
       cycle_id,
       account_value_snapshot,
       sharpe_snapshot,
+      decision_blob,
+      reasoning_content,
+      review_status,
+      review_notes,
+      reviewed_at,
       created_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
     `,
     [
       modelId,
@@ -2133,10 +2114,15 @@ export async function insertAgentLog(modelId, publicMessage, cotTraceSummary, op
       cotTraceSummary,
       prompt_text ?? null,
       response_text ?? null,
-      response_json ?? null,
+      responseJsonParam ?? null,
       cycle_id ?? cycleId ?? null,
       account_value_snapshot != null ? toNumber(account_value_snapshot) : null,
       sharpe_snapshot != null ? toNumber(sharpe_snapshot) : null,
+      decisionBlobParam ?? null,
+      reasoningContent ?? null,
+      review_status ?? "logged",
+      review_notes ?? null,
+      reviewed_at ?? null,
       createdAt,
     ]
   );
@@ -2145,12 +2131,13 @@ export async function insertAgentLog(modelId, publicMessage, cotTraceSummary, op
 export async function getPriceMap(symbols) {
   if (!symbols.length) return {};
   const pool = getPool();
-  const redisRows = await fetchRedisTickers(symbols);
+  const normalizedSymbols = symbols.map((symbol) => normalizeSymbol(symbol));
+  const redisRows = await fetchRedisTickers(normalizedSymbols);
   const prices = {};
   const missing = [];
 
   redisRows.forEach((payload, idx) => {
-    const symbol = symbols[idx];
+    const symbol = normalizedSymbols[idx];
     const ticker = hydrateTickerFromRedis(payload, symbol);
     if (ticker) {
       prices[symbol] = ticker;
@@ -2160,9 +2147,11 @@ export async function getPriceMap(symbols) {
   });
 
   if (missing.length) {
-    const dbRows = await fetchDbTickers(pool, missing);
+    const storageSymbols = missing.map((symbol) => ensureMarketSymbol(symbol));
+    const dbRows = await fetchDbTickers(pool, storageSymbols);
     dbRows.forEach((row) => {
-      prices[row.symbol] = hydrateTickerFromDb(row);
+      const base = normalizeSymbol(row.symbol);
+      prices[base] = hydrateTickerFromDb(row);
     });
   }
 
@@ -2285,7 +2274,8 @@ export async function countAgentLogs(modelId) {
  * @returns {Promise<number>} 更新的交易对数量
  */
 export async function updateMarketPricesFromBinance() {
-  const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'DOGEUSDT', 'XRPUSDT'];
+  const symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'DOGE', 'XRP'];
+  const binanceSymbols = symbols.map(s => s + 'USDT');
   const pool = getPool();
   
   try {
@@ -2301,25 +2291,27 @@ export async function updateMarketPricesFromBinance() {
     const allTickers = await response.json();
     const tickerMap = {};
     
-    // 构建映射�?
+    // 构建映射表（从 BTCUSDT -> BTC）
     allTickers.forEach(ticker => {
-      if (symbols.includes(ticker.symbol)) {
-        tickerMap[ticker.symbol] = ticker;
+      if (binanceSymbols.includes(ticker.symbol)) {
+        const cleanSymbol = ticker.symbol.replace('USDT', '');
+        tickerMap[cleanSymbol] = ticker;
       }
     });
     
-    // 更新数据�?
+    // 更新数据库
     let updated = 0;
     for (const symbol of symbols) {
       const ticker = tickerMap[symbol];
       if (!ticker) continue;
+      const storageSymbol = ensureMarketSymbol(symbol);
       
       await pool.query(
         `
         INSERT INTO market_prices (
           symbol, price, change_percent, high_price, low_price, volume, last_update_ts
         )
-        VALUES ($1, $2, $3, $4, $5, $6, now())
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (symbol) DO UPDATE SET
           price = EXCLUDED.price,
           change_percent = EXCLUDED.change_percent,
@@ -2330,12 +2322,13 @@ export async function updateMarketPricesFromBinance() {
           updated_at = now()
         `,
         [
-          symbol,
+          storageSymbol,
           parseFloat(ticker.lastPrice),
           parseFloat(ticker.priceChangePercent),
           parseFloat(ticker.highPrice),
           parseFloat(ticker.lowPrice),
-          parseFloat(ticker.volume)
+          parseFloat(ticker.volume),
+          ticker.closeTime ? new Date(ticker.closeTime) : new Date()
         ]
       );
       
@@ -2373,11 +2366,17 @@ export async function initializeBtcBenchmark() {
     await client.query("BEGIN");
 
     const fetchPrice = async () => {
-      const { rows } = await client.query(
-        `SELECT price FROM market_prices WHERE symbol = $1 LIMIT 1`,
-        ["BTCUSDT"]
-      );
-      return rows[0]?.price != null ? Number(rows[0].price) : null;
+      const candidates = ["BTC", "BTCUSDT"]; // 支持两种存储格式
+      for (const symbol of candidates) {
+        const { rows } = await client.query(
+          `SELECT price FROM market_prices WHERE symbol = $1 ORDER BY last_update_ts DESC LIMIT 1`,
+          [symbol]
+        );
+        if (rows[0]?.price != null) {
+          return Number(rows[0].price);
+        }
+      }
+      return null;
     };
 
     let btcPrice = await fetchPrice();
@@ -2387,35 +2386,39 @@ export async function initializeBtcBenchmark() {
     }
 
     if (!btcPrice) {
-      throw new Error("无法获取 BTCUSDT 最新价格，请先同步行情。");
+      throw new Error("无法获取 BTC 最新价格，请先同步行情。");
     }
 
     const btcQuantity = initialUsd / btcPrice;
 
-    const systemPrompt =
-      "You are a passive BTC benchmark account that simply tracks buy-and-hold performance.";
-    const userPrompt = "No trading. Maintain the initial BTC position for comparison.";
+    const template = await getDefaultPromptTemplate();
+    if (!template) {
+      throw new Error("尚未配置默认提示词模板，无法创建基准模型。");
+    }
 
     await client.query(
       `
       INSERT INTO agent_models (
         model_id,
         display_name,
-        system_prompt,
-        user_prompt,
+        api_base_url,
+        api_key,
         human_review_required,
+        prompt_template_id,
         auto_run_enabled,
         auto_run_interval_minutes,
         display_icon
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      ON CONFLICT (model_id) DO NOTHING
       `,
       [
         modelId,
         "BTC Benchmark",
-        systemPrompt,
-        userPrompt,
+        null,
+        null,
         false,
+        template.id,
         false,
         60,
         "icon:gpt",
@@ -2430,54 +2433,28 @@ export async function initializeBtcBenchmark() {
         latest_equity,
         available_cash,
         total_unrealized_pnl,
+        metadata,
         updated_at
       )
-      VALUES ($1,$2,$3,$4,$5, now())
+      VALUES ($1,$2,$3,$4,$5,$6, now())
       ON CONFLICT (model_id) DO UPDATE SET
         starting_equity = EXCLUDED.starting_equity,
         latest_equity = EXCLUDED.latest_equity,
         available_cash = EXCLUDED.available_cash,
         total_unrealized_pnl = EXCLUDED.total_unrealized_pnl,
-        updated_at = now()
-      `,
-      [modelId, initialUsd, initialUsd, 0, 0]
-    );
-
-    await client.query(
-      `
-      INSERT INTO agent_positions_runtime (
-        model_id,
-        symbol,
-        side,
-        leverage,
-        quantity,
-        entry_price,
-        current_price,
-        notional,
-        notional_usd,
-        unrealized_pnl
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-      ON CONFLICT (model_id, symbol) DO UPDATE SET
-        quantity = EXCLUDED.quantity,
-        entry_price = EXCLUDED.entry_price,
-        current_price = EXCLUDED.current_price,
-        notional = EXCLUDED.notional,
-        notional_usd = EXCLUDED.notional_usd,
-        unrealized_pnl = EXCLUDED.unrealized_pnl,
+        metadata = EXCLUDED.metadata,
         updated_at = now()
       `,
       [
         modelId,
-        "BTCUSDT",
-        "LONG",
-        1,
-        btcQuantity,
-        btcPrice,
-        btcPrice,
         initialUsd,
         initialUsd,
         0,
+        0,
+        JSON.stringify({
+          benchmark_quantity: btcQuantity,
+          benchmark_entry_price: btcPrice,
+        }),
       ]
     );
 

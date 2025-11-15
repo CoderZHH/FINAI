@@ -1,5 +1,9 @@
 import { logManager } from "../../../../lib/logManager.js";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /**
  * SSE (Server-Sent Events) 端点用于实时流式传输服务器日志到浏览器
  * 

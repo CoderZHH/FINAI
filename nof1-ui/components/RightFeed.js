@@ -105,6 +105,26 @@ const extractDecisionList = (payload) => {
   return [];
 };
 
+const MODEL_COLORS = [
+  "bg-emerald-100 text-emerald-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-sky-100 text-sky-700",
+  "bg-purple-100 text-purple-700",
+];
+
+function ModelBadge({ modelId }) {
+  const label = humanizeModel(modelId);
+  const initial = label?.charAt(0)?.toUpperCase() || "M";
+  const color = MODEL_COLORS[Math.abs(modelId?.length ?? 0) % MODEL_COLORS.length];
+  return (
+    <span className={`inline-flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${color}`}>
+      {initial}
+    </span>
+  );
+}
+
 /** ---------- 成交记录面板 ---------- */
 function TradeCard({ trade }) {
   const side = String(trade.side ?? "LONG").toUpperCase();
@@ -308,55 +328,63 @@ function ModelChatPanel() {
     return <div className="text-xs text-neutral-500">暂无模型对话</div>;
   }
 
+  const InnerSection = ({ title, children }) => (
+    <details className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-[11px] text-neutral-600 transition data-[open=true]:bg-white">
+      <summary className="cursor-pointer font-semibold text-neutral-700">{title}</summary>
+      <div className="mt-2 text-neutral-700">{children}</div>
+    </details>
+  );
+
   return (
     <div className="space-y-3">
       {logs.map((entry, index) => {
         const payload = parseResponsePayload(entry.response_json) ?? {};
         const decisions = extractDecisionList(payload);
         const reasoningText =
+          entry.reasoning_content ??
           payload.reasoning ??
           entry.response_json?.raw?.choices?.[0]?.message?.reasoning_content ??
           entry.response_json?.choices?.[0]?.message?.reasoning_content ??
-          entry.cot_trace_summary ??
           "";
         const promptText = entry.prompt_text ?? payload.prompt_text ?? "";
-        const responseText = entry.response_text ?? payload.response_text ?? "";
         const headline = entry.public_message || payload.summary || "模型已返回一组决策";
+        const statusLine = entry.cot_trace_summary || headline;
         const timestampLabel = formatTimestamp(entry.timestamp);
 
         return (
           <details
             key={entry.id ?? `${entry.model_id}-${entry.timestamp}`}
-            className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-[12px] leading-relaxed shadow-sm"
+            className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-[12px] leading-relaxed shadow-sm"
             open={index === 0}
           >
-            <summary className="flex cursor-pointer items-center justify-between text-[11px] text-neutral-500">
-              <span className="font-semibold text-neutral-900">{humanizeModel(entry.model_id)}</span>
-              <span>{timestampLabel}</span>
-            </summary>
-            <div className="mt-2 text-neutral-800">{headline}</div>
-
-            <div className="mt-2 space-y-3 border-t border-dashed border-neutral-200 pt-2 text-[11px]">
-              {promptText && (
+            <summary className="flex cursor-pointer items-center justify-between gap-3 text-[11px] text-neutral-500">
+              <div className="flex items-center gap-3">
+                <ModelBadge modelId={entry.model_id} />
                 <div>
-                  <div className="font-semibold text-neutral-500">用户提示词</div>
-                  <pre className="mt-1 whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 text-neutral-800">
+                  <div className="font-semibold text-neutral-900">{humanizeModel(entry.model_id)}</div>
+                  <div className="text-[11px] text-neutral-500">{statusLine}</div>
+                </div>
+              </div>
+              <span className="whitespace-nowrap text-neutral-400">{timestampLabel}</span>
+            </summary>
+            <div className="mt-3 space-y-3 border-t border-dashed border-neutral-200 pt-3">
+              {promptText && (
+                <InnerSection title="用户提示词">
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 font-mono text-[11px] text-neutral-800">
                     {promptText}
                   </pre>
-                </div>
+                </InnerSection>
               )}
               {reasoningText && (
-                <div>
-                  <div className="font-semibold text-neutral-500">思考过程</div>
-                  <pre className="mt-1 whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 text-neutral-800">
+                <InnerSection title="思考过程">
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 font-mono text-[11px] text-neutral-800">
                     {reasoningText}
                   </pre>
-                </div>
+                </InnerSection>
               )}
-              {decisions.length ? (
-                <div>
-                  <div className="font-semibold text-neutral-500">返回结果</div>
-                  <div className="mt-1 space-y-2">
+              <InnerSection title="返回结果">
+                {decisions.length ? (
+                  <div className="space-y-2">
                     {decisions.map((decision, idx) => {
                       const coin = (decision.coin || decision.symbol || `#${idx + 1}`).toUpperCase();
                       const qty = formatQuantity(decision.quantity ?? decision.size);
@@ -364,8 +392,8 @@ function ModelChatPanel() {
                       const signal = (decision.signal || decision.action || "—").toUpperCase();
                       const justification = decision.justification ?? decision.reason ?? "";
                       return (
-                        <div key={`${coin}-${idx}`} className="rounded border border-neutral-200 px-2 py-2">
-                          <div className="flex items-center justify-between text-[11px] font-semibold text-neutral-800">
+                        <div key={`${coin}-${idx}`} className="rounded-xl border border-neutral-200 px-3 py-2 text-[11px]">
+                          <div className="flex items-center justify-between font-semibold text-neutral-800">
                             <span>{coin}</span>
                             <span className="text-neutral-500">{signal}</span>
                           </div>
@@ -374,25 +402,19 @@ function ModelChatPanel() {
                             <span>杠杆 {leverage}</span>
                             {decision.risk_usd != null && <span>风险 {formatCurrency(decision.risk_usd)}</span>}
                           </div>
-                          {justification && <p className="mt-1 text-[11px] text-neutral-600">{justification}</p>}
+                          {justification && (
+                            <p className="mt-1 text-[11px] text-neutral-600">{justification}</p>
+                          )}
                         </div>
                       );
                     })}
                   </div>
-                </div>
-              ) : (
-                <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-neutral-500">
-                  本次回复未生成结构化决策。
-                </div>
-              )}
-              {responseText && (
-                <div>
-                  <div className="font-semibold text-neutral-500">模型回复（原文）</div>
-                  <pre className="mt-1 whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 text-neutral-800">
-                    {responseText}
-                  </pre>
-                </div>
-              )}
+                ) : (
+                  <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-center text-neutral-500">
+                    本次回复未生成结构化决策。
+                  </div>
+                )}
+              </InnerSection>
             </div>
           </details>
         );

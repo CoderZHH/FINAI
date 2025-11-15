@@ -13,7 +13,7 @@ const ICON_ALIAS_MAP = {
   default: "icon:gpt",
   gpt: "icon:gpt",
   "gpt-4": "icon:gpt",
-  "gpt4": "icon:gpt",
+  gpt4: "icon:gpt",
   openai: "icon:gpt",
   deepseek: "icon:deepseek",
   "deepseek-v3": "icon:deepseek",
@@ -67,7 +67,7 @@ export function normaliseIconValue(iconValue) {
         const parsed = JSON.parse(trimmed);
         return normaliseIconValue(parsed);
       } catch (err) {
-        // fall through
+        // ignore
       }
     }
     return trimmed;

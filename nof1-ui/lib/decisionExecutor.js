@@ -1,23 +1,13 @@
 import {
-  deleteRuntimePosition,
+  appendAccountTimeseries,
+  closeOpenTrades,
+  getOpenPositions,
   getPriceMap,
   getRuntimeAccount,
   insertTrade,
   upsertRuntimeAccount,
-  upsertRuntimePosition,
-  appendAccountTimeseries, // ✅ 添加时间序列记录函数
 } from "./dataRepository.js";
-
-export function normaliseDecisionMap(decisions) {
-  return { ...(decisions ?? {}) };
-}
-
-;
-  Object.entries(decisions ?? {}).forEach(([symbol, value]) => {
-    normalized[ensureUsdtSymbol(symbol)] = value;
-  });
-  return normalized;
-}
+import { logger } from "./logManager.js";
 
 export function buildExitPlan(decision = {}) {
   return {
@@ -51,13 +41,25 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       sharpe_ratio: 0,
       win_rate: 0,
     };
+  const startingEquity = account.starting_equity ?? 10000;
+  let availableCash = account.available_cash ?? startingEquity;
 
   const decisionSource = options.decisionSource ?? "ai_proposed_human_approved";
+  const cycleId =
+    options.cycleId != null && Number.isFinite(Number(options.cycleId))
+      ? Number(options.cycleId)
+      : null;
   const now = new Date();
 
   let executed = 0;
   let totalRisk = 0;
   let totalNotional = 0;
+
+  logger.info("decisionExecutor", "Applying decision set", {
+    model_id: modelId,
+    symbol_count: symbols.length,
+    decision_source: decisionSource,
+  });
 
   for (const [symbol, decision] of Object.entries(decisions)) {
     const ticker = prices[symbol];
@@ -92,26 +94,24 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
 
     // 如果是 close 信号或数量为0，删除持仓（平仓）
     if (signal === "close" || quantity <= 0) {
-      await deleteRuntimePosition(modelId, symbol);
+      const closeResult = await closeOpenTrades(modelId, symbol, price);
+      if (closeResult.closed > 0) {
+        availableCash += closeResult.releasedNotional + closeResult.realizedPnl;
+        executed += closeResult.closed;
+        logger.info("decisionExecutor", "Closed open positions", {
+          model_id: modelId,
+          symbol,
+          closed_count: closeResult.closed,
+          realized_pnl: closeResult.realizedPnl,
+        });
+      }
       continue;
     }
 
     const side = signal === "short" ? "SHORT" : "LONG";
     const notional = price * quantity * leverage;
-
-    await upsertRuntimePosition(modelId, {
-      symbol,
-      side,
-      leverage,
-      entry_price: price,
-      current_price: price,
-      quantity,
-      notional,
-      unrealized_pnl: 0,
-      take_profit: decision.profit_target ?? null,
-      stop_loss: decision.stop_loss ?? null,
-      exit_plan: buildExitPlan(decision),
-    });
+    const marginCost =
+      leverage > 0 ? notional / leverage : price * quantity;
 
     await insertTrade({
       model_id: modelId,
@@ -126,24 +126,32 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       holding_time: null,
       realized_net_pnl: 0,
       decision_source: decisionSource,
+      cycle_id: cycleId,
       exit_plan: buildExitPlan(decision),
     });
 
     executed += 1;
     totalRisk += Math.max(0, riskBudget);
     totalNotional += notional;
+    availableCash = Math.max(0, availableCash - marginCost);
   }
 
-  const startingEquity = account.starting_equity ?? 10000;
-  const previousCash = account.available_cash ?? startingEquity;
-  const availableCash = Math.max(0, previousCash - totalRisk);
-  const latestEquity = availableCash + totalNotional;
+  const openPositions = await getOpenPositions(modelId);
+  const positionsValue = openPositions.reduce(
+    (sum, pos) => sum + (pos.current_price ?? 0) * (pos.quantity ?? 0),
+    0
+  );
+  const totalUnrealized = openPositions.reduce(
+    (sum, pos) => sum + (pos.unrealized_pnl ?? 0),
+    0
+  );
+  const latestEquity = availableCash + positionsValue;
 
   const updatedAccount = await upsertRuntimeAccount(modelId, {
     starting_equity: startingEquity,
     latest_equity: latestEquity,
     available_cash: availableCash,
-    total_unrealized_pnl: 0,
+    total_unrealized_pnl: totalUnrealized,
     sharpe_ratio: account.sharpe_ratio ?? 0,
     win_rate: account.win_rate ?? 0,
     trade_count: (account.trade_count ?? 0) + executed,
@@ -155,10 +163,18 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     ts: now,
     equity: latestEquity,
     cash_available: availableCash,
-    unrealized_pnl: 0,
+    unrealized_pnl: totalUnrealized,
     realized_pnl: account.total_realized_pnl ?? 0,
     sharpe: account.sharpe_ratio ?? 0,
     win_rate: account.win_rate ?? 0,
+  });
+
+  logger.info("decisionExecutor", "Decision set applied", {
+    model_id: modelId,
+    executed_trades: executed,
+    total_risk_usd: Number(totalRisk.toFixed(2)),
+    total_notional_usd: Number(totalNotional.toFixed(2)),
+    latest_equity: latestEquity,
   });
 
   return {

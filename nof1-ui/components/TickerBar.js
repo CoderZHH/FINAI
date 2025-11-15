@@ -95,7 +95,7 @@ function TickerItem({ symbol, price }) {
         <CoinBadge symbol={symbol} size={24} />
       </div>
       <div className="flex flex-col gap-0.5">
-        <span className="text-[11px] font-medium text-neutral-500">{symbol}/USDT</span>
+        <span className="text-[11px] font-medium text-neutral-500">{symbol}</span>
         <span
           className={`font-mono text-sm font-semibold transition duration-300 ${priceColor}`}
           aria-live="polite"
