@@ -293,7 +293,7 @@ export async function runDecisionCycle(modelId, options = {}) {
   logger.info(`⏱️  请求耗时: ${durationMs}ms\n`);
 
   // ------------------------------------------------------------------------
-  // 步骤 4: 解析和规范化决策数据
+  // 步骤 4: 解析和规范化决策数据d
   // ------------------------------------------------------------------------
   const parsedPayload = llmResult.decisions;
   logger.info('parsedPayload', parsedPayload);

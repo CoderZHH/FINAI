@@ -67,6 +67,16 @@ function renderIcon(iconValue) {
   return <span>{info.text ?? info.value}</span>;
 }
 
+function formatTimestampLabel(ts) {
+  if (!Number.isFinite(ts)) return "";
+  return new Date(ts).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /**
  * ===========================
  * 将 API 返回的数据转换为图表专用格式
@@ -88,18 +98,15 @@ function deriveChartData(seriesMeta, viewMode) {
   seriesMeta.forEach((series) => {
     series.points.forEach((point) => {
       // 兼容 timestamp / ts / time
-      const ts = point.timestamp ?? point.ts ?? point.time;
-      if (!ts) return;
+      const tsRaw = point.timestamp ?? point.ts ?? point.time;
+      const ts = Number(tsRaw);
+      if (!Number.isFinite(ts)) return;
 
       // 如果此时间点尚未初始化，先建一个对象
       if (!timestampEntries.has(ts)) {
         timestampEntries.set(ts, {
           ts,
-          time: new Date(ts).toLocaleString("zh-CN", {
-            month: "numeric",
-            day: "numeric",
-            hour: "2-digit",
-          }),
+          label: formatTimestampLabel(ts),
         });
       }
 
@@ -120,7 +127,7 @@ function deriveChartData(seriesMeta, viewMode) {
 /**
  * 图例（legend）数据：用于决定图表右上角小色块以及线条配置
  */
-function deriveLegend(seriesMeta) {
+function deriveLegend(seriesMeta, iconLookup) {
   return seriesMeta.map((series) => {
     const latest = series.points.at(-1) ?? {
       dollar_equity: 0,
@@ -131,7 +138,8 @@ function deriveLegend(seriesMeta) {
       modelId: series.model_id,
       name: series.name,
       color: series.color,
-      iconValue: series.icon,
+      iconValue:
+        iconLookup?.get(series.model_id) ?? series.icon ?? series.iconValue ?? null,
       strokeDasharray: series.strokeDasharray,
       isBenchmark: Boolean(series.is_benchmark),
       latestDollar: latest.dollar_equity,
@@ -160,6 +168,7 @@ function deriveCards(models) {
         latestDollar: latest,
         pnlAbs,
         pnlPct,
+        iconValue: model.display_icon,
         isBenchmark: false,
       };
     });
@@ -231,8 +240,21 @@ export default function ChartPanel() {
     return chartData.filter((row) => (row.ts ?? row.timestamp ?? 0) >= cutoff);
   }, [chartData, timeWindow]);
 
+  const iconLookup = useMemo(() => {
+    const map = new Map();
+    (modelsData?.models ?? []).forEach((model) => {
+      if (model?.model_id) {
+        map.set(model.model_id, model.display_icon ?? model.icon ?? null);
+      }
+    });
+    return map;
+  }, [modelsData]);
+
   /** 图例数据 */
-  const legendData = useMemo(() => deriveLegend(seriesMeta), [seriesMeta]);
+  const legendData = useMemo(
+    () => deriveLegend(seriesMeta, iconLookup),
+    [seriesMeta, iconLookup],
+  );
 
   /** 卡片区数据 */
   const cards = useMemo(() => deriveCards(modelsData?.models ?? []), [modelsData]);
@@ -336,6 +358,7 @@ export default function ChartPanel() {
           series={legendData}
           yFormatter={yFormatter}
           valueFormatter={tooltipFormatter}
+          xFormatter={formatTimestampLabel}
         />
       </div>
 
