@@ -1,240 +1,184 @@
+/**
+ * ============================================================================
+ * ChartInner - ECharts 图表封装组件
+ * ============================================================================
+ * 
+ * 功能说明：
+ * - 使用 ECharts 渲染折线图，用于展示模型权益、收益率等时序数据
+ * - 支持多条折线同时显示（如多个模型的权益曲线对比）
+ * - 提供自定义的格式化器、工具提示、终点标签等功能
+ * - 响应式设计，自动适配窗口大小变化
+ * 
+ * 设计特点：
+ * - 使用 ECharts 实例复用，避免频繁创建销毁
+ * - 通过 useMemo 优化图表配置计算
+ * - 支持自定义图标显示（文字或图片）在折线终点
+ * - 平滑曲线渲染，提升视觉效果
+ * 
+ * ============================================================================
+ */
+
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  CartesianGrid,
-  Customized,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { resolveModelIcon } from "../lib/modelIcons";
+import { useEffect, useMemo, useRef } from "react";
+import * as echarts from "echarts";
+import { resolveModelIcon, normaliseIconValue } from "../lib/modelIcons";
 
-const MARGIN = { top: 32, right: 160, left: 8, bottom: 12 };
-const DEFAULT_VALUE_FORMATTER = (value) => value ?? 0;
+/**
+ * 默认数值格式化器：将数值格式化为中文千分位格式，保留2位小数
+ * @param {number} value - 原始数值
+ * @returns {string} 格式化后的字符串，如 "10,000.00"
+ */
+const DEFAULT_VALUE_FORMATTER = (value) =>
+  Number(value ?? 0).toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+/**
+ * 默认 X 轴时间格式化器：将时间戳格式化为 "时:分" 格式
+ * @param {number|Date} ts - 时间戳或日期对象
+ * @returns {string} 格式化后的时间字符串，如 "15:30"
+ */
 const DEFAULT_X_FORMATTER = (ts) =>
-  new Date(ts).toLocaleTimeString("zh-CN", {
+  new Date(ts ?? Date.now()).toLocaleString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
   });
+
 const X_AXIS_ID = "ts-axis";
 const Y_AXIS_ID = "equity-axis";
 
-function SvgModelIcon({ iconValue, x, y, size = 16 }) {
-  const info = resolveModelIcon(iconValue);
-  if (info?.type === "image" && info.src) {
-    return (
-      <image
-        href={info.src}
-        x={x}
-        y={y}
-        width={size}
-        height={size}
-        preserveAspectRatio="xMidYMid slice"
-      />
-    );
+const SERIES_COLOR_MAP = {
+  btc: "rgb(247, 147, 26)",
+  "icon:claude": "rgb(255, 107, 54)",
+  "icon:deepseek": "rgb(78, 107, 254)",
+  "icon:doubao": "rgb(202, 228, 255)",
+  "icon:gemini": "rgb(47, 166, 250)",
+  "icon:gpt": "rgb(18, 163, 127)",
+  "icon:gro": "rgb(0, 0, 0)",
+  "icon:kimi": "rgb(81, 81, 81)",
+  "icon:minimax": "rgb(233, 41, 112)",
+  "icon:qwen": "rgb(106, 0, 225)",
+  "icon:wenxin": "rgb(221, 247, 252)",
+  "icon:zhipu": "rgb(255, 255, 255)",
+};
+
+const BTC_ICON = "/icons/coin/btc.svg";
+
+function getSeriesColor(entry) {
+  if (entry.isBenchmark || entry.modelId === "btc_benchmark") {
+    return SERIES_COLOR_MAP.btc;
   }
-  const text = info?.text ?? info?.value ?? "◎";
-  return (
-    <text
-      x={x + size / 2}
-      y={y + size * 0.75}
-      textAnchor="middle"
-      fontSize={size * 0.75}
-    >
-      {text}
-    </text>
-  );
+  const normalized = entry.iconValue ? normaliseIconValue(entry.iconValue) : null;
+  if (normalized && SERIES_COLOR_MAP[normalized]) {
+    return SERIES_COLOR_MAP[normalized];
+  }
+  return entry.color ?? "rgb(37, 99, 235)";
 }
 
-function collectLatestPoints(series, data) {
-  if (!series.length || !data.length) return [];
-  return series
-    .map((entry) => {
-      for (let idx = data.length - 1; idx >= 0; idx -= 1) {
-        const row = data[idx];
-        const value = Number(row?.[entry.lineKey]);
-        if (!Number.isFinite(value)) continue;
-        return {
-          lineKey: entry.lineKey,
-          modelId: entry.modelId,
-          name: entry.name,
-          color: entry.color,
-          iconValue: entry.iconValue,
-          value,
-          ts: row.ts,
-          label: row.label,
-        };
-      }
-      return null;
-    })
-    .filter(Boolean);
+function getContrastColor(rgbString) {
+  if (!rgbString) return "#0f172a";
+  const match = rgbString.match(/(\d+\.?\d*)/g);
+  if (!match || match.length < 3) return "#0f172a";
+  const [r, g, b] = match.slice(0, 3).map((v) => Number(v));
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? "#0f172a" : "#ffffff";
 }
 
-function HoverLayer({
-  hover,
-  lineEndings,
-  valueFormatter,
-  xFormatter,
-  width,
-  height,
-  offset,
-  xAxisMap,
-  yAxisMap,
-}) {
-  if (!lineEndings.length) return null;
-  const chartLeft = offset?.left ?? 0;
-  const chartRight = width - (offset?.right ?? 0);
-  const chartTop = offset?.top ?? 0;
-  const chartBottom = height - (offset?.bottom ?? 0);
+function buildEndLabelConfig(seriesEntry, fillColor, latestValue, formatValue) {
+  const isBenchmark = seriesEntry.isBenchmark || seriesEntry.modelId === "btc_benchmark";
+  const iconInfo = isBenchmark
+    ? { type: "image", src: BTC_ICON, value: "BTC" }
+    : resolveModelIcon(seriesEntry.iconValue);
+  const displayText =
+    iconInfo.type === "text"
+      ? iconInfo.text?.slice(0, 3)?.toUpperCase() ?? ""
+      : "";
+  const contrastColor = getContrastColor(fillColor);
+  const valueText = latestValue != null ? formatValue(latestValue) : "";
 
-  const xAxisKey = Object.keys(xAxisMap ?? {})[0];
-  const yAxisKey = Object.keys(yAxisMap ?? {})[0];
-  const xScale = xAxisKey ? xAxisMap[xAxisKey]?.scale : null;
-  const yScale = yAxisKey ? yAxisMap[yAxisKey]?.scale : null;
+  const baseCircle = {
+    height: 34,
+    width: 34,
+    align: "center",
+    lineHeight: 34,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: fillColor ?? "rgba(15, 23, 42, 0.85)",
+    backgroundColor: "transparent",
+  };
 
-  const crosshairX =
-    hover && xScale && Number.isFinite(hover.ts)
-      ? xScale(hover.ts) + chartLeft
-      : hover?.coordinate?.x ?? null;
-  const crosshairYStart = chartTop;
-  const crosshairYEnd = chartBottom;
+  let rich;
+  let formatterText;
 
-  const focusEntry = hover
-    ? lineEndings.find((entry) => entry.lineKey === hover.lineKey)
-    : null;
+  if (iconInfo.type === "image" && iconInfo.src) {
+    // 图片图标：直接使用图片样式 + 数值
+    rich = {
+      icon: {
+        height: 34,
+        width: 34,
+        backgroundColor: {
+          image: iconInfo.src,
+        },
+        borderRadius: 17, // 使用像素值而非999，ECharts对图片背景的borderRadius支持更好
+        borderWidth: 2,
+        borderColor: fillColor ?? "rgba(15, 23, 42, 0.85)",
+      },
+      value: {
+        color: fillColor ?? "#0f172a",
+        fontSize: 11,
+        fontWeight: 600,
+        padding: [0, 0, 0, 6],
+      },
+    };
+    formatterText = `{icon| } {value|${valueText}}`;
+  } else {
+    // 文字图标：填充圆圈 + 文字 + 数值
+    rich = {
+      outer: {
+        ...baseCircle,
+        fontSize: 13,
+        fontWeight: 600,
+        color: contrastColor,
+        backgroundColor: fillColor ?? "rgba(15, 23, 42, 0.85)",
+      },
+      value: {
+        color: fillColor ?? "#0f172a",
+        fontSize: 11,
+        fontWeight: 600,
+        padding: [0, 0, 0, 6],
+      },
+    };
+    formatterText = displayText
+      ? `{outer|${displayText}} {value|${valueText}}`
+      : `{outer| } {value|${valueText}}`;
+  }
 
-  const formattedValue =
-    hover && hover.value != null ? valueFormatter(hover.value) : null;
-
-  const formattedTime =
-    hover && hover.ts != null
-      ? (typeof xFormatter === "function" ? xFormatter(hover.ts) : hover.label)
-      : null;
-
-  const topLabelWidth = 212;
-  const labelX =
-    crosshairX != null
-      ? Math.min(
-          Math.max(chartLeft + 8, crosshairX - topLabelWidth / 2),
-          chartRight - topLabelWidth - 8,
-        )
-      : chartLeft + 8;
-  const topLabelY = chartTop + 4;
-
-  return (
-    <g className="recharts-hover-layer" pointerEvents="none">
-      {hover && crosshairX != null && (
-        <>
-          <line
-            x1={crosshairX}
-            x2={crosshairX}
-            y1={crosshairYStart}
-            y2={crosshairYEnd}
-            stroke="#0f172a"
-            strokeDasharray="4 4"
-            strokeWidth={1}
-            opacity={0.6}
-          />
-          <g transform={`translate(${labelX}, ${topLabelY})`}>
-            <rect
-              width={topLabelWidth}
-              height={40}
-              rx={10}
-              fill="#fff"
-              stroke={focusEntry?.color ?? "#0f172a"}
-              strokeWidth={1}
-            />
-            {formattedTime && (
-              <text
-                x={16}
-                y={16}
-                fontSize={11}
-                fontWeight={500}
-                fill="#475569"
-              >
-                {formattedTime}
-              </text>
-            )}
-            <text
-              x={40}
-              y={formattedTime ? 30 : 22}
-              fontSize={12}
-              fontWeight={600}
-              fill="#0f172a"
-            >
-              {(focusEntry?.name ?? hover.name ?? "").toUpperCase()}
-            </text>
-            <text
-              x={topLabelWidth - 12}
-              y={formattedTime ? 30 : 22}
-              fontSize={12}
-              fontWeight={600}
-              textAnchor="end"
-              fill="#0f172a"
-            >
-              {formattedValue}
-            </text>
-            {focusEntry?.iconValue && (
-              <SvgModelIcon iconValue={focusEntry.iconValue} x={12} y={8} size={16} />
-            )}
-          </g>
-        </>
-      )}
-
-      {lineEndings.map((entry) => {
-        const x = xScale ? xScale(entry.ts) + chartLeft : chartRight - 20;
-        const y = yScale ? yScale(entry.value) + chartTop : chartTop;
-        const label = valueFormatter(entry.value);
-        const bubbleWidth = Math.max(120, label.length * 6 + 70);
-        const bubbleHeight = 28;
-        const bubbleX = Math.min(chartRight - bubbleWidth, x + 8);
-        const bubbleY = Math.min(
-          chartBottom - bubbleHeight - 4,
-          Math.max(chartTop + 4, y - bubbleHeight / 2),
-        );
-        const isFocused = hover?.lineKey === entry.lineKey;
-        const bubbleFill = isFocused ? entry.color : "#fff";
-        const textColor = isFocused ? "#fff" : "#0f172a";
-        const opacity =
-          hover && hover.lineKey !== entry.lineKey ? 0.35 : 1;
-
-        return (
-          <g
-            key={entry.lineKey}
-            transform={`translate(${bubbleX}, ${bubbleY})`}
-            opacity={opacity}
-          >
-            <rect
-              width={bubbleWidth}
-              height={bubbleHeight}
-              rx={bubbleHeight / 2}
-              fill={bubbleFill}
-              stroke={entry.color}
-              strokeWidth={isFocused ? 1.4 : 0.9}
-            />
-            {entry.iconValue && (
-              <SvgModelIcon iconValue={entry.iconValue} x={8} y={6} size={16} />
-            )}
-            <text
-              x={32}
-              y={18}
-              fontSize={11}
-              fontWeight={600}
-              fill={textColor}
-            >
-              {label}
-            </text>
-          </g>
-        );
-      })}
-    </g>
-  );
+  return {
+    show: true,
+    distance: 14,
+    formatter() {
+      return formatterText;
+    },
+    rich,
+    padding: [0, 0],
+    borderRadius: 999,
+    borderColor: "transparent",
+    borderWidth: 0,
+  };
 }
 
+/**
+ * ChartInner 主组件
+ * 
+ * @param {Object} props - 组件属性
+ * @param {Array} props.data - 图表数据数组，每项包含时间戳和各系列的值
+ * @param {Array} props.series - 系列配置数组，定义要显示的折线及其样式
+ * @param {Function} [props.yFormatter] - Y 轴标签格式化函数
+ * @param {Function} [props.valueFormatter] - 数值格式化函数
+ * @param {Function} [props.xFormatter] - X 轴标签格式化函数
+ */
 export default function ChartInner({
   data,
   series,
@@ -242,122 +186,205 @@ export default function ChartInner({
   valueFormatter,
   xFormatter,
 }) {
-  const formatValue = valueFormatter || DEFAULT_VALUE_FORMATTER;
-  const formatX = xFormatter ?? DEFAULT_X_FORMATTER;
+  // ECharts 容器 DOM 引用
+  const containerRef = useRef(null);
+  // ECharts 实例引用（复用实例以提升性能）
   const chartRef = useRef(null);
-  const [hover, setHover] = useState(null);
 
-  const lineEndings = useMemo(
-    () => collectLatestPoints(series, data),
-    [series, data],
-  );
+  // 使用传入的格式化器或默认格式化器
+  const formatValue = valueFormatter || DEFAULT_VALUE_FORMATTER;
+  const formatX = xFormatter || DEFAULT_X_FORMATTER;
+  const formatY = yFormatter || ((v) => formatValue(v));
 
-  const handleMouseMove = useCallback(
-    (state) => {
-      if (!state?.isTooltipActive || !state?.activePayload?.length) {
-        setHover(null);
-        return;
-      }
-      const axisMap = chartRef.current?.state?.yAxisMap ?? {};
-      const axis = axisMap[Y_AXIS_ID];
-      const pointerValue =
-        axis && typeof axis.scale?.invert === "function"
-          ? axis.scale.invert(state.chartY ?? 0)
-          : null;
-      let closest = null;
-      let minDiff = Infinity;
-      state.activePayload.forEach((payload) => {
-        const val = Number(payload.payload?.[payload.dataKey]);
-        if (!Number.isFinite(val)) return;
-        const diff = pointerValue != null ? Math.abs(val - pointerValue) : 0;
-        if (!closest || diff < minDiff) {
-          closest = payload;
-          minDiff = diff;
+  /**
+   * 构建 ECharts 配置对象
+   * 使用 useMemo 缓存，仅在依赖项变化时重新计算
+   */
+  const chartOption = useMemo(() => {
+    // 数据或系列为空时，返回空配置
+    if (!data?.length || !series?.length) {
+      return {
+        xAxis: { type: "category" },
+        yAxis: { type: "value" },
+        series: [],
+      };
+    }
+
+    // 构建 X 轴标签数组（时间点）
+    const xAxisLabels = data.map((row) => {
+      if (row.label) return row.label;
+      if (row.ts != null) return formatX(row.ts);
+      return "";
+    });
+
+    // 构建每条折线的配置
+    let globalMin = Number.POSITIVE_INFINITY;
+    let globalMax = Number.NEGATIVE_INFINITY;
+
+    const seriesOptions = series.map((entry) => {
+      // 提取该系列在每个时间点的数值
+      const values = data.map((row) => {
+        const raw = row[entry.lineKey];
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed)) {
+          globalMin = Math.min(globalMin, parsed);
+          globalMax = Math.max(globalMax, parsed);
+          return parsed;
         }
+        return raw ?? null;
       });
-      if (!closest) {
-        setHover(null);
-        return;
+
+      const seriesColor = getSeriesColor(entry);
+
+      return {
+        name: entry.name,
+        type: "line",
+        data: values,
+        showSymbol: false, // 不显示数据点标记
+        smooth: 0.2, // 平滑曲线（0-1之间，0为折线，1为最平滑）
+        emphasis: { focus: "series" }, // 鼠标悬停时高亮整条系列
+        blur: {
+          // 其他系列虚化效果
+          lineStyle: { opacity: 0.15 },
+          itemStyle: { opacity: 0.15 },
+        },
+        lineStyle: {
+          width: entry.isBenchmark ? 2.4 : 3, // 基准线稍细
+          color: seriesColor,
+        },
+        itemStyle: {
+          color: seriesColor,
+        },
+        endLabel: buildEndLabelConfig(
+          entry,
+          seriesColor,
+          values.at(-1),
+          formatValue
+        ), // 终点标签
+      };
+    });
+
+    const hasRange =
+      Number.isFinite(globalMin) && Number.isFinite(globalMax) && globalMax > globalMin;
+    const padding = hasRange ? Math.max((globalMax - globalMin) * 0.08, 1) : 1;
+    const axisMin = Number.isFinite(globalMin) ? globalMin - padding : undefined;
+    const axisMax = Number.isFinite(globalMax) ? globalMax + padding : undefined;
+
+    return {
+      animationDuration: 600, // 动画时长（毫秒）
+      tooltip: {
+        trigger: "axis", // 坐标轴触发，显示该时间点所有系列的值
+        appendToBody: true,
+        axisPointer: {
+          type: "cross", // 十字准星指示器
+          label: {
+            backgroundColor: "#0f172a",
+            formatter(params) {
+              // X 轴显示原始标签，Y 轴显示格式化数值
+              if (params.axisDimension === "x") {
+                return params.value;
+              }
+              return formatY(params.value);
+            },
+          },
+        },
+        // 自定义工具提示内容
+        formatter(params = []) {
+          if (!params.length) return "";
+          const dataIndex = params[0].dataIndex ?? 0;
+          const header = xAxisLabels[dataIndex] ?? "";
+          
+          // 构建每个系列的数值行
+          const rows = params
+            .map((item) => {
+              const val = formatValue(item.value);
+              return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
+                  <span style="display:flex;align-items:center;gap:6px;">
+                    <span style="width:10px;height:10px;border-radius:999px;background:${item.color};display:inline-block;"></span>
+                    <span style="font-size:11px;color:#475569;">${item.seriesName}</span>
+                  </span>
+                  <span style="font-weight:600;color:#0f172a;">${val}</span>
+                </div>`;
+            })
+            .join("");
+          
+          return `<div style="font-size:12px;">
+              <div style="font-weight:600;color:#0f172a;margin-bottom:4px;">${header}</div>
+              ${rows}
+            </div>`;
+        },
+      },
+      grid: { 
+        left: 40,    // 左边距（为 Y 轴标签留空间）
+        top: 40,     // 上边距
+        right: 220,  // 右边距（为终点标签留足够空间，增加到220以容纳图标+数值）
+        bottom: 30   // 下边距（为 X 轴标签留空间）
+      },
+      xAxis: {
+        type: "category",
+        data: xAxisLabels,
+        axisTick: { show: false },
+        axisLabel: {
+          color: "#475569",
+          formatter: (value) => value,
+        },
+      },
+      yAxis: {
+        type: "value",
+        min: axisMin,
+        max: axisMax,
+        scale: true,
+        axisLabel: {
+          color: "#475569",
+          formatter: (value) => formatY(value),
+        },
+        splitLine: {
+          lineStyle: { type: "dashed", color: "#e5e7eb" },
+        },
+      },
+      legend: {
+        show: false, // 不显示图例（使用终点标签代替）
+      },
+      series: seriesOptions,
+    };
+  }, [data, series, formatValue, formatX, formatY]);
+
+  /**
+   * 初始化和更新 ECharts 实例
+   */
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    // 首次渲染时创建 ECharts 实例
+    if (!chartRef.current) {
+      chartRef.current = echarts.init(containerRef.current);
+    }
+    
+    const chart = chartRef.current;
+    // 设置配置（第二个参数 true 表示不合并配置，完全替换）
+    chart.setOption(chartOption, true);
+    
+    // 监听窗口大小变化，自动调整图表尺寸
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    
+    return () => {
+      window.removeEventListener("resize", resize);
+    };
+  }, [chartOption]);
+
+  /**
+   * 组件卸载时销毁 ECharts 实例，释放资源
+   */
+  useEffect(
+    () => () => {
+      if (chartRef.current) {
+        chartRef.current.dispose();
+        chartRef.current = null;
       }
-      const meta = series.find((item) => item.lineKey === closest.dataKey);
-      const tsRaw = Number(closest.payload?.ts);
-      const tsValue = Number.isFinite(tsRaw) ? tsRaw : null;
-      const rawValue = Number(closest.payload?.[closest.dataKey]);
-      setHover({
-        ts: tsValue,
-        lineKey: closest.dataKey,
-        name: meta?.name ?? closest.name,
-        value: Number.isFinite(rawValue) ? rawValue : null,
-        label: closest.payload?.label ?? null,
-        coordinate: state.activeCoordinate ?? { x: state.chartX, y: state.chartY },
-      });
     },
-    [series],
+    [],
   );
 
-  const handleMouseLeave = () => setHover(null);
-  const focusKey = hover?.lineKey;
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart
-        data={data}
-        margin={MARGIN}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-        ref={chartRef}
-      >
-        <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-        <XAxis
-          dataKey="ts"
-          type="number"
-          xAxisId={X_AXIS_ID}
-          tick={{ fontSize: 12 }}
-          tickFormatter={formatX}
-          domain={["dataMin", "dataMax"]}
-          allowDuplicatedCategory={false}
-        />
-        <YAxis
-          yAxisId={Y_AXIS_ID}
-          tick={{ fontSize: 12 }}
-          tickFormatter={yFormatter}
-          width={90}
-          domain={["auto", "auto"]}
-        />
-        <Tooltip cursor={false} content={() => null} />
-        {series.map((item) => {
-          const isActive = !focusKey || focusKey === item.lineKey;
-          const opacity = focusKey && focusKey !== item.lineKey ? 0.2 : 1;
-          return (
-            <Line
-              key={item.lineKey}
-              type="monotone"
-              dataKey={item.lineKey}
-              name={item.name}
-              stroke={item.color}
-              strokeDasharray={item.strokeDasharray}
-              strokeWidth={isActive ? 3 : 1.8}
-              strokeOpacity={opacity}
-              yAxisId={Y_AXIS_ID}
-              xAxisId={X_AXIS_ID}
-              dot={false}
-              connectNulls
-              isAnimationActive={false}
-            />
-          );
-        })}
-        <Customized
-          component={(props) => (
-            <HoverLayer
-              {...props}
-              hover={hover}
-              lineEndings={lineEndings}
-              valueFormatter={formatValue}
-              xFormatter={formatX}
-            />
-          )}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
+  return <div ref={containerRef} className="h-full w-full" />;
 }

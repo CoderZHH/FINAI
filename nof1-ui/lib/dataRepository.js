@@ -18,6 +18,7 @@ const DEFAULT_SYMBOLS = (() => {
 
 const NORMALIZED_SYMBOLS = DEFAULT_SYMBOLS.map(normalizeSymbol);
 const BASELINE_MODEL_ID = "btc_benchmark";
+const DEFAULT_MODEL_ICON = "icon:gpt";
 let promptTemplateSchemaEnsured = false;
 
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
@@ -245,6 +246,7 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     display_name: row.display_name ?? row.model_id,
     api_base_url: row.api_base_url ?? "",
     api_key: includeSecrets ? apiKey : "",
+    display_icon: row.display_icon ?? DEFAULT_MODEL_ICON,
     has_api_key: Boolean(apiKey),
     system_prompt: template?.system_prompt ?? "",
     user_prompt: template?.user_prompt ?? "",
@@ -751,7 +753,7 @@ export async function createAgentModel(payload) {
     prompt_template_id = null,
     auto_run_enabled = false,
     auto_run_interval_minutes = 5,
-    display_icon = "icon:gpt",
+    display_icon = DEFAULT_MODEL_ICON,
   } = payload;
 
   const template = await resolvePromptTemplate(prompt_template_id);
@@ -786,7 +788,7 @@ export async function createAgentModel(payload) {
       template.id ?? null,
       Boolean(auto_run_enabled),
       sanitizedInterval,
-      display_icon ?? "icon:gpt",
+      display_icon ?? DEFAULT_MODEL_ICON,
     ]
   );
 
@@ -819,6 +821,7 @@ export async function updateAgentModel(modelId, updates) {
     prompt_template_id: "prompt_template_id",
     auto_run_enabled: "auto_run_enabled",
     auto_run_interval_minutes: "auto_run_interval_minutes",
+    display_icon: "display_icon",
     last_auto_run_at: "last_auto_run_at",
     next_auto_run_at: "next_auto_run_at",
   };
@@ -1353,13 +1356,18 @@ export async function markToMarketAllModels() {
   const now = new Date();
 
   for (const account of tradable) {
-    const modelPositions = positionsByModel.get(account.model_id) ?? [];
-    const walletBalance = toNumber(
+    let modelPositions = positionsByModel.get(account.model_id) ?? [];
+    let walletBalance = toNumber(
       account.available_cash ??
         account.latest_equity ??
         account.starting_equity ??
         10000
     );
+    const { realizedDelta } = await enforceExitTargets(account.model_id, modelPositions);
+    if (realizedDelta !== 0) {
+      walletBalance += realizedDelta;
+      modelPositions = await getOpenPositions(account.model_id);
+    }
     const summary = summarizeMarginAccount(walletBalance, modelPositions);
     const startingEquity = toNumber(account.starting_equity ?? walletBalance);
     const realizedPnl = summary.walletBalance - startingEquity;
@@ -2028,6 +2036,63 @@ export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) 
   }
 
   return { closed: rows.length, realizedPnl: realized, releasedMargin };
+}
+
+async function enforceExitTargets(modelId, positions) {
+  let realizedDelta = 0;
+  let triggered = [];
+  const closedSymbols = new Set();
+
+  for (const position of positions) {
+    if (!position || closedSymbols.has(position.symbol)) continue;
+    const currentPrice = Number(position.current_price ?? position.entry_price);
+    if (!Number.isFinite(currentPrice)) continue;
+
+    const side = String(position.side ?? "LONG").toUpperCase();
+    const takeProfit =
+      position.take_profit ??
+      position.exit_plan?.profit_target ??
+      null;
+    const stopLoss =
+      position.stop_loss ??
+      position.exit_plan?.stop_loss ??
+      null;
+
+    let reason = null;
+    if (side === "LONG") {
+      if (takeProfit != null && currentPrice >= Number(takeProfit)) {
+        reason = "take_profit";
+      } else if (stopLoss != null && currentPrice <= Number(stopLoss)) {
+        reason = "stop_loss";
+      }
+    } else {
+      if (takeProfit != null && currentPrice <= Number(takeProfit)) {
+        reason = "take_profit";
+      } else if (stopLoss != null && currentPrice >= Number(stopLoss)) {
+        reason = "stop_loss";
+      }
+    }
+
+    if (!reason) continue;
+
+    const closeResult = await closeOpenTrades(
+      modelId,
+      position.symbol,
+      currentPrice
+    );
+    if (closeResult.closed > 0) {
+      realizedDelta += closeResult.realizedPnl ?? 0;
+      triggered.push({
+        symbol: position.symbol,
+        reason,
+        price: currentPrice,
+        closed: closeResult.closed,
+      });
+      closedSymbols.add(position.symbol);
+    }
+  }
+
+  return { realizedDelta, triggered };
 }
 
 async function getOpenPositionsGrouped(modelIds) {

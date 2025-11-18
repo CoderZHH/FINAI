@@ -1,11 +1,15 @@
 const IMAGE_ICON_OPTIONS = [
   { value: "icon:gpt", label: "GPT / OpenAI", src: "/icons/models/GPT.png" },
-  { value: "icon:deepseek", label: "DeepSeek", src: "/icons/models/DeepSeek.png" },
-  { value: "icon:claude", label: "Claude", src: "/icons/models/Claude.png" },
-  { value: "icon:gemini", label: "Gemini", src: "/icons/models/Gemini.png" },
-  { value: "icon:qwen", label: "Qwen / 千问", src: "/icons/models/qianwen.png" },
-  { value: "icon:zhipu", label: "智谱 GLM", src: "/icons/models/ZhiPu.png" },
-  { value: "icon:kimi", label: "Kimi / Moonshot", src: "/icons/models/kimi.png" },
+  { value: "icon:deepseek", label: "DeepSeek", src: "/icons/models/DEEPSEEK.png" },
+  { value: "icon:claude", label: "Claude", src: "/icons/models/CLAUDE.png" },
+  { value: "icon:gemini", label: "Gemini", src: "/icons/models/GEMINI.png" },
+  { value: "icon:qwen", label: "Qianwen / 千问", src: "/icons/models/QIANWEN.png" },
+  { value: "icon:zhipu", label: "Zhipu GLM", src: "/icons/models/ZHIPU.png" },
+  { value: "icon:kimi", label: "Kimi / Moonshot", src: "/icons/models/KIMI.png" },
+  { value: "icon:grok", label: "Grok", src: "/icons/models/GROK.png" },
+  { value: "icon:doubao", label: "Doubao", src: "/icons/models/DOUBAO.png" },
+  { value: "icon:minimax", label: "Minimax", src: "/icons/models/MINIMAX.png" },
+  { value: "icon:wenxin", label: "Wenxin", src: "/icons/models/WENXIN.png" },
 ];
 
 const ICON_ALIAS_MAP = {
@@ -23,11 +27,17 @@ const ICON_ALIAS_MAP = {
   google: "icon:gemini",
   qwen: "icon:qwen",
   "qwen-max": "icon:qwen",
+  qianwen: "icon:qwen",
   千问: "icon:qwen",
+  文心: "icon:wenxin",
+  wenxin: "icon:wenxin",
+  doubao: "icon:doubao",
   zhipu: "icon:zhipu",
   glm: "icon:zhipu",
   kimi: "icon:kimi",
   moonshot: "icon:kimi",
+  minimax: "icon:minimax",
+  grok: "icon:grok",
 };
 
 const ICON_MAP = IMAGE_ICON_OPTIONS.reduce(
