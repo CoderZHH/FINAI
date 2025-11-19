@@ -4,6 +4,7 @@ import {
   updateAgentModel,
 } from "../../../../lib/dataRepository";
 import { isModelRunning } from "../../../../lib/autoRunner";
+import { logger } from "../../../../lib/logManager.js";
 
 async function getModelIdFromContext(context) {
   if (!context) return undefined;
@@ -12,6 +13,18 @@ async function getModelIdFromContext(context) {
     return params?.modelId;
   }
   return undefined;
+}
+
+function normalizeMarginConfigInput(input) {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+  return Object.entries(input).reduce((acc, [key, value]) => {
+    const sym = String(key ?? "").trim().toUpperCase();
+    if (!sym) return acc;
+    acc[sym] = value === "isolated" ? "isolated" : "cross";
+    return acc;
+  }, {});
 }
 
 export async function GET(_request, context) {
@@ -26,9 +39,9 @@ export async function GET(_request, context) {
 export async function PUT(request, context) {
   const modelId = await getModelIdFromContext(context);
   try {
-    console.log("[api/models] PUT", modelId);
+    logger.info("api/models", "PUT request", { modelId });
     const payload = await request.json();
-    console.log("[api/models] payload", payload);
+    logger.info("api/models", "payload received", payload);
 
     const currentModel = await getAgentModelById(modelId);
     if (!currentModel) {
@@ -110,6 +123,10 @@ export async function PUT(request, context) {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(payload, "margin_config")) {
+      updates.margin_config = normalizeMarginConfigInput(payload.margin_config);
+    }
+
     if (Object.prototype.hasOwnProperty.call(payload, "auto_run_interval_minutes")) {
       const interval = Number(payload.auto_run_interval_minutes);
       if (!Number.isFinite(interval) || interval < 1) {
@@ -119,7 +136,7 @@ export async function PUT(request, context) {
     }
 
     const model = await updateAgentModel(modelId, updates);
-    console.log("[api/models] update result", model);
+    logger.info("api/models", "update result", model);
     if (!model) {
       return Response.json({ error: "Model not found" }, { status: 404 });
     }

@@ -20,6 +20,18 @@ function generateModelId(displayName) {
   return `model-${randomUUID().slice(0, 8)}`;
 }
 
+function normalizeMarginConfigInput(input) {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+  return Object.entries(input).reduce((acc, [key, value]) => {
+    const sym = String(key ?? "").trim().toUpperCase();
+    if (!sym) return acc;
+    acc[sym] = value === "isolated" ? "isolated" : "cross";
+    return acc;
+  }, {});
+}
+
 export async function GET(request) {
   const url = new URL(request.url);
   const includeSecrets = url.searchParams.get("includeSecrets") === "true";
@@ -66,6 +78,7 @@ export async function POST(request) {
           : Number(payload.auto_run_interval_minutes) || 5,
       display_icon:
         typeof payload.display_icon === "string" ? payload.display_icon : undefined,
+      margin_config: normalizeMarginConfigInput(payload.margin_config),
     };
 
     const model = await createAgentModel(cleanPayload);

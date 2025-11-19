@@ -11,6 +11,40 @@ import {
   resolveModelIcon,
 } from "../../lib/modelIcons";
 
+/** @typedef {"openai"|"deepseek"|"anthropic"|"gemini"|"qwen"|"zhipu"|"moonshot"|"xai_grok"|"doubao"|"minimax"|"wenxin"|"custom"} ProviderId */
+
+/** @type {Array<{id: ProviderId,label: string}>} */
+const PROVIDER_OPTIONS = [
+  { id: "openai", label: "GPT / OpenAI", icon: "icon:gpt" },
+  { id: "deepseek", label: "DeepSeek", icon: "icon:deepseek" },
+  { id: "anthropic", label: "Claude", icon: "icon:claude" },
+  { id: "gemini", label: "Gemini", icon: "icon:gemini" },
+  { id: "qwen", label: "Qwen / Dashscope", icon: "icon:qwen" },
+  { id: "zhipu", label: "GLM / 智谱", icon: "icon:zhipu" },
+  { id: "moonshot", label: "Moonshot", icon: "icon:kimi" },
+  { id: "xai_grok", label: "Grok", icon: "icon:grok" },
+  { id: "doubao", label: "Doubao / 火山", icon: "icon:doubao" },
+  { id: "minimax", label: "MiniMax", icon: "icon:minimax" },
+  { id: "wenxin", label: "Wenxin", icon: "icon:wenxin" },
+  { id: "custom", label: "Custom / 自定义", icon: DEFAULT_MODEL_ICON },
+];
+
+/** @type {Record<ProviderId,string>} */
+const PROVIDER_DEFAULT_BASE_URL = {
+  openai: "https://api.openai.com/v1",
+  deepseek: "https://api.deepseek.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  qwen: "https://dashscope.aliyuncs.com",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  moonshot: "https://api.moonshot.ai/v1",
+  xai_grok: "https://api.x.ai/v1",
+  doubao: "https://ark.cn-beijing.volces.com/api/v3",
+  minimax: "https://api.minimax.io/v1",
+  wenxin: "https://api.baidu.com/ernie-bot/v1",
+  custom: "",
+};
+
 const fetcher = async (url) => {
   const response = await fetch(url);
   if (!response.ok) {
@@ -18,6 +52,36 @@ const fetcher = async (url) => {
   }
   return response.json();
 };
+
+const DEFAULT_MARGIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT"];
+/** @type {ProviderId} */
+const DEFAULT_PROVIDER = "deepseek";
+const PROVIDER_ICON_MAP = PROVIDER_OPTIONS.reduce((acc, option) => {
+  acc[option.id] = option.icon || DEFAULT_MODEL_ICON;
+  return acc;
+}, {});
+
+function inferProviderFromBaseUrl(baseUrl = "") {
+  const normalized = baseUrl.trim().toLowerCase();
+  if (!normalized) return "custom";
+  const match = Object.entries(PROVIDER_DEFAULT_BASE_URL).find(
+    ([, url]) => url && url.trim().toLowerCase() === normalized
+  );
+  return (match?.[0] ?? "custom");
+}
+
+function buildTextIconFromName(name = "") {
+  const trimmed = name.trim().toUpperCase();
+  const char = trimmed ? trimmed[0] : "A";
+  return `text:${char}`;
+}
+
+function getProviderIconValue(providerId, currentIcon, displayName) {
+  if (providerId === "custom") {
+    return buildTextIconFromName(displayName);
+  }
+  return PROVIDER_ICON_MAP[providerId] || DEFAULT_MODEL_ICON;
+}
 
 const PLACEHOLDER_LIBRARY = [
   {
@@ -62,6 +126,7 @@ const EMPTY_FORM = {
   display_name: "",
   api_base_url: "",
   api_key: "",
+  provider: DEFAULT_PROVIDER,
   system_prompt: "",
   user_prompt: "",
   human_review_required: false,
@@ -69,6 +134,7 @@ const EMPTY_FORM = {
   auto_run_interval_minutes: 5,
   prompt_template_id: "",
   display_icon: DEFAULT_MODEL_ICON,
+  margin_config: {},
 };
 
 function formatDate(timestamp) {
@@ -654,7 +720,7 @@ function ModelAvatar({ icon, size = "lg" }) {
     <span
       className={`inline-flex items-center justify-center rounded-full bg-white px-3 py-1 text-base font-semibold shadow ${dimension}`}
     >
-      {info?.text ?? "[GEAR]️"}
+      {info?.text ?? "⚙"}
     </span>
   );
 }
@@ -825,6 +891,7 @@ function FormModal({
   mode,
   saving,
   promptTemplates,
+  symbols = [],
 }) {
   const isEdit = mode === "edit";
   const templateOptions = promptTemplates || [];
@@ -833,14 +900,12 @@ function FormModal({
   const selectedTemplate = !missingTemplate
     ? templateOptions.find((tpl) => tpl.id === formState.prompt_template_id)
     : null;
-  const iconSelectValue = useMemo(() => {
-    const current = formState.display_icon?.trim();
-    if (!current) return CUSTOM_ICON_VALUE;
-    return MODEL_ICON_CHOICES.some((option) => option.value === current)
-      ? current
-      : CUSTOM_ICON_VALUE;
-  }, [formState.display_icon]);
-
+  const providerValue = formState.provider ?? DEFAULT_PROVIDER;
+  const providerIconValue = getProviderIconValue(
+    providerValue,
+    formState.display_icon,
+    formState.display_name
+  );
   useEffect(() => {
     if (selectedTemplate) {
       onChange((prev) => ({
@@ -863,12 +928,40 @@ function FormModal({
     });
   };
 
-  const handleCustomIconChange = (event) => {
-    const trimmed = event.target.value.trim().slice(0, 4);
+  const handleProviderSelect = (providerId) => {
+    const fallback = PROVIDER_DEFAULT_BASE_URL[providerId] ?? "";
     onChange({
       ...formState,
-      display_icon: trimmed || DEFAULT_MODEL_ICON,
+      provider: providerId,
+      api_base_url: fallback,
+      display_icon:
+        providerId === "custom"
+          ? buildTextIconFromName(formState.display_name ?? "")
+          : PROVIDER_ICON_MAP[providerId] || DEFAULT_MODEL_ICON,
     });
+  };
+  const handleBaseUrlChange = (value) => {
+    onChange({
+      ...formState,
+      api_base_url: value,
+    });
+  };
+  const handleApiKeyChange = (value) => {
+    onChange({
+      ...formState,
+      api_key: value,
+    });
+  };
+
+  const handleMarginModeChange = (symbol, value) => {
+    const normalized = value === "isolated" ? "isolated" : "cross";
+    onChange((prev) => ({
+      ...prev,
+      margin_config: {
+        ...(prev.margin_config ?? {}),
+        [symbol]: normalized,
+      },
+    }));
   };
 
   return (
@@ -903,69 +996,36 @@ function FormModal({
           />
         </label>
 
-        <div className="flex flex-col gap-2 text-xs font-medium text-neutral-500">
-          <span>模型图标</span>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {MODEL_ICON_CHOICES.map((option) => {
-              const selected = formState.display_icon === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => onChange({ ...formState, display_icon: option.value })}
-                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${selected
-                      ? "border-emerald-400 bg-emerald-50 text-emerald-700 shadow-sm"
-                      : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-200"
-                    }`}
-                >
-                  <img src={option.src} alt={option.label} className="h-6 w-6 rounded-full object-contain" />
-                  <span className="truncate">{option.label}</span>
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => onChange({ ...formState, display_icon: "" })}
-              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-semibold transition ${iconSelectValue === CUSTOM_ICON_VALUE
-                  ? "border-blue-400 bg-blue-50 text-blue-700 shadow-sm"
-                  : "border-neutral-200 bg-white text-neutral-600 hover:border-blue-200"
-                }`}
+        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
+          <span>模型 Provider</span>
+          <div className="relative">
+            <select
+              value={providerValue}
+              onChange={(event) => handleProviderSelect(event.target.value)}
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
             >
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600">
-                [EDIT]️
-              </span>
-              <span>自定义</span>
-            </button>
-          </div>
-          {iconSelectValue === CUSTOM_ICON_VALUE && (
-            <input
-              value={formState.display_icon ?? ""}
-              onChange={handleCustomIconChange}
-              maxLength={6}
-              className="rounded-lg border border-dashed border-blue-300 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-              placeholder="输入任意 Emoji / 文本"
-            />
-          )}
-          <span className="text-[11px] text-neutral-400">
-            当前预览：
-            <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-neutral-100 px-2 py-1">
-              <ModelAvatar icon={formState.display_icon} size="sm" />
-              <span className="text-neutral-500">{formState.display_name || "模型"}</span>
+              {PROVIDER_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+              <ModelAvatar icon={providerIconValue} size="sm" />
             </span>
-          </span>
-        </div>
-
-        <p className="text-[11px] text-neutral-400">
-          该图标会显示在首页曲线与卡片中，用于快速区分不同模型。
-        </p>
+          </div>
+          <p className="text-[11px] text-neutral-400">
+            选择 Provider 会自动填入默认 BaseURL 并设置图标，可在下方预览。
+          </p>
+        </label>
 
         <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
           <span>API Base URL</span>
           <input
             value={formState.api_base_url}
-            onChange={(event) => onChange({ ...formState, api_base_url: event.target.value })}
+            onChange={(event) => handleBaseUrlChange(event.target.value)}
             className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            placeholder="https://api.deepseek.com/v1"
+            placeholder={PROVIDER_DEFAULT_BASE_URL[providerValue] || "https://..."}
           />
         </label>
 
@@ -974,12 +1034,54 @@ function FormModal({
           <input
             type="password"
             value={formState.api_key}
-            onChange={(event) => onChange({ ...formState, api_key: event.target.value })}
+            onChange={(event) => handleApiKeyChange(event.target.value)}
             className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
             placeholder="sk-..."
           />
           <p className="text-[11px] text-neutral-400">保存后不会再次显示，更新时需重新输入。</p>
         </label>
+
+        <div className="rounded-2xl border border-neutral-200 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold text-neutral-600">保证金模式（逐仓 / 全仓）</p>
+              <p className="text-[11px] text-neutral-400">
+                每个模型账号可按交易对独立配置。默认使用全仓，可根据策略需求改为逐仓。
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 overflow-hidden rounded-xl border border-neutral-100">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50 text-left text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="px-4 py-2">Symbol</th>
+                  <th className="px-4 py-2">Mode</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(symbols.length ? symbols : DEFAULT_MARGIN_SYMBOLS).map((symbol) => {
+                  const value = formState.margin_config?.[symbol] ?? "cross";
+                  return (
+                    <tr key={symbol} className="border-t border-neutral-100 text-sm text-neutral-700">
+                      <td className="px-4 py-2 font-medium">{symbol}</td>
+                      <td className="px-4 py-2">
+                        <select
+                          className="w-36 rounded-lg border border-neutral-300 px-3 py-1.5 text-sm"
+                          value={value}
+                          onChange={(event) => handleMarginModeChange(symbol, event.target.value)}
+                        >
+                          <option value="cross">Cross 全仓</option>
+                          <option value="isolated">Isolated 逐仓</option>
+                        </select>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
           <span>提示词模板</span>
           <select
@@ -1059,12 +1161,27 @@ export default function ModelsPage() {
     isLoading: templatesLoading,
     mutate: mutateTemplates,
   } = useSWR("/api/prompt-templates?includeContent=true", fetcher);
+  const { data: symbolsData } = useSWR("/api/symbols", fetcher);
 
 
   const promptTemplates = useMemo(() => templateData?.templates ?? [], [templateData]);
   const defaultTemplateId = useMemo(() => {
     return promptTemplates.find((tpl) => tpl.is_default)?.id || promptTemplates[0]?.id || null;
   }, [promptTemplates]);
+  const symbolOptions = useMemo(() => {
+    const fromApi =
+      symbolsData?.symbols?.map((symbol) => String(symbol ?? "").toUpperCase()).filter(Boolean) ??
+      DEFAULT_MARGIN_SYMBOLS;
+    return Array.from(new Set(fromApi)).sort();
+  }, [symbolsData]);
+  const normalizeMarginConfig = (source = {}) => {
+    const universe = symbolOptions.length ? symbolOptions : DEFAULT_MARGIN_SYMBOLS;
+    return universe.reduce((acc, symbol) => {
+      const mode = source?.[symbol];
+      acc[symbol] = mode === "isolated" ? "isolated" : "cross";
+      return acc;
+    }, {});
+  };
 
   const [modalState, setModalState] = useState({ open: false, mode: "create" });
   const [formState, setFormState] = useState(EMPTY_FORM);
@@ -1100,6 +1217,9 @@ export default function ModelsPage() {
     setModalState({ open: true, mode: "create" });
     setFormState({
       ...EMPTY_FORM,
+      api_base_url: PROVIDER_DEFAULT_BASE_URL[DEFAULT_PROVIDER],
+      provider: DEFAULT_PROVIDER,
+      margin_config: normalizeMarginConfig(),
       ...hydrateFormFromTemplate(fallbackTemplateId),
     });
     setEditingId(null);
@@ -1130,6 +1250,7 @@ export default function ModelsPage() {
     setFormState({
       display_name: model.display_name ?? "",
       api_base_url: model.api_base_url ?? "",
+      provider: inferProviderFromBaseUrl(model.api_base_url ?? ""),
       api_key: "",
       human_review_required: Boolean(model.human_review_required),
       auto_run_enabled: Boolean(model.auto_run_enabled),
@@ -1138,6 +1259,7 @@ export default function ModelsPage() {
       system_prompt: model.system_prompt || "",
       user_prompt: model.user_prompt || "",
       display_icon: model.display_icon || DEFAULT_MODEL_ICON,
+      margin_config: normalizeMarginConfig(model.margin_config || {}),
     });
     setEditingId(model.model_id);
     setErrorMessage(null);
@@ -1204,6 +1326,7 @@ export default function ModelsPage() {
       auto_run_enabled: formState.auto_run_enabled,
       auto_run_interval_minutes: formState.auto_run_interval_minutes,
       display_icon: formState.display_icon || DEFAULT_MODEL_ICON,
+      margin_config: normalizeMarginConfig(formState.margin_config || {}),
     };
 
     if (formState.api_key.trim()) {
@@ -1398,6 +1521,7 @@ export default function ModelsPage() {
             mode={modalState.mode}
             saving={saving}
             promptTemplates={promptTemplates}
+            symbols={symbolOptions}
           />
         </div>
       ) : null}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { logger } from "../lib/logManager.js";
 
 /**
  * LogConsole 组件
@@ -27,10 +28,8 @@ export default function LogConsole() {
     function connect() {
       if (!mounted) return;
 
-      console.log(
-        "%c[LogConsole] 连接到服务器日志流...",
-        "color: #3b82f6; font-weight: bold"
-      );
+      const infoLog = (message, data) => logger.info("LogConsole", message, data);
+      infoLog("连接到服务器日志流...");
 
       try {
         const eventSource = new EventSource("/api/logs/stream");
@@ -53,6 +52,7 @@ export default function LogConsole() {
             });
 
             // 根据级别选择控制台方法和颜色
+            const infoLog = (msg, data) => logger.info("LogConsole", msg, data);
             const levelConfig = {
               debug: {
                 method: console.debug,
@@ -60,7 +60,7 @@ export default function LogConsole() {
                 emoji: "🔍",
               },
               info: {
-                method: console.log,
+                method: infoLog,
                 color: "#3b82f6",
                 emoji: "ℹ️",
               },
@@ -79,12 +79,19 @@ export default function LogConsole() {
             const config = levelConfig[level] || levelConfig.info;
 
             // 输出日志到浏览器控制台
-            config.method(
-              `%c${config.emoji} [${time}] [${module}]%c ${message}`,
-              `color: ${config.color}; font-weight: bold`,
-              "color: inherit",
-              data || ""
-            );
+            if (config.method === infoLog) {
+              config.method(
+                `${config.emoji} [${time}] [${module}] ${message}`,
+                data || null
+              );
+            } else {
+              config.method(
+                `%c${config.emoji} [${time}] [${module}]%c ${message}`,
+                `color: ${config.color}; font-weight: bold`,
+                "color: inherit",
+                data || ""
+              );
+            }
           } catch (err) {
             console.error("[LogConsole] 解析日志条目失败:", err);
           }
@@ -101,10 +108,7 @@ export default function LogConsole() {
 
           // 3 秒后尝试重连
           if (mounted) {
-            console.log(
-              "%c[LogConsole] 3 秒后尝试重新连接...",
-              "color: #f59e0b"
-            );
+            infoLog("3 秒后尝试重新连接...");
             reconnectTimeoutRef.current = setTimeout(() => {
               if (mounted) connect();
             }, 3000);
@@ -112,10 +116,7 @@ export default function LogConsole() {
         };
 
         eventSource.onopen = () => {
-          console.log(
-            "%c[LogConsole] 日志流连接成功 ✓",
-            "color: #10b981; font-weight: bold"
-          );
+          infoLog("日志流连接成功");
         };
       } catch (err) {
         console.error(
@@ -137,10 +138,7 @@ export default function LogConsole() {
       }
 
       if (eventSourceRef.current) {
-        console.log(
-          "%c[LogConsole] 断开日志流连接",
-          "color: #6b7280"
-        );
+        logger.info("LogConsole", "断开日志流连接");
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }

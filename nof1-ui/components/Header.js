@@ -9,7 +9,7 @@ export default function Header() {
         <div className="flex h-14 items-center justify-between gap-6">
           <div className="flex items-center gap-6">
             <Link href="/" className="text-xl font-black tracking-tight">
-              Alpha Arena 实验台
+              ZHH赚钱助手
             </Link>
             <nav className="hidden items-center gap-6 text-sm md:flex">
               <Link className="hover:underline" href="/">

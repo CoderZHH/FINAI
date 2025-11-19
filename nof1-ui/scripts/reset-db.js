@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadEnvFromFile } from "./utils/loadEnv.js";
+import { logger } from "../lib/logManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,6 +12,7 @@ const PROMPTS_DIR = path.resolve(PROJECT_ROOT, "prompts");
 
 const envFile = process.env.ENV_FILE ?? path.resolve(PROJECT_ROOT, ".env.local");
 await loadEnvFromFile(envFile);
+const LOG_MODULE = "reset-db";
 
 async function importModule(relativePath) {
   const modulePath = path.join(__dirname, relativePath);
@@ -90,12 +92,47 @@ async function seedDefaultPromptTemplate(pool) {
     ]
   );
 
-  console.log("[reset-db] 默认提示词模板已确保存在。");
+  logger.info(LOG_MODULE, "默认提示词模板已确保存在。");
   return rows[0]?.id ?? null;
+}
+
+async function seedRiskLimits(pool) {
+  await pool.query(
+    `
+    INSERT INTO risk_limits (symbol, tier, notional_cap, max_leverage, imr, mmr) VALUES
+      ('BTCUSDT', 1, 50000, 125, 0.008, 0.004),
+      ('BTCUSDT', 2, 250000, 100, 0.010, 0.005),
+      ('ETHUSDT', 1, 20000, 125, 0.010, 0.005),
+      ('ETHUSDT', 2, 100000, 75, 0.012, 0.006)
+    ON CONFLICT (symbol, tier) DO UPDATE
+    SET
+      notional_cap = EXCLUDED.notional_cap,
+      max_leverage = EXCLUDED.max_leverage,
+      imr = EXCLUDED.imr,
+      mmr = EXCLUDED.mmr;
+    `
+  );
+
+  logger.info(LOG_MODULE, "risk_limits seeded.");
+}
+
+async function seedInsuranceFund(pool) {
+  await pool.query(
+    `
+    INSERT INTO insurance_fund (id, balance)
+    VALUES (1, 100000)
+    ON CONFLICT (id) DO UPDATE
+    SET balance = EXCLUDED.balance,
+        updated_at = now()
+    `
+  );
+  logger.info(LOG_MODULE, "insurance_fund seeded.");
 }
 
 async function dropExistingTables(pool) {
   const tables = [
+    "risk_limits",
+    "insurance_fund",
     "agent_positions_runtime",
     "pending_decisions",
     "agent_logs",
@@ -147,6 +184,7 @@ async function ensureSchema(pool) {
       last_auto_run_at TIMESTAMPTZ,
       next_auto_run_at TIMESTAMPTZ,
       display_icon TEXT DEFAULT 'icon:gpt',
+      margin_config JSONB DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
@@ -159,6 +197,11 @@ async function ensureSchema(pool) {
       latest_equity NUMERIC(18,8) NOT NULL,
       available_cash NUMERIC(18,8) NOT NULL,
       total_unrealized_pnl NUMERIC(18,8) NOT NULL,
+      wallet_balance NUMERIC(18,8),
+      position_margin NUMERIC(18,8),
+      realized_pnl_price NUMERIC(18,8) DEFAULT 0,
+      realized_pnl_fee NUMERIC(18,8) DEFAULT 0,
+      realized_pnl_funding NUMERIC(18,8) DEFAULT 0,
       sharpe_ratio NUMERIC(18,8) DEFAULT 0,
       win_rate NUMERIC(18,8) DEFAULT 0,
       trade_count INTEGER DEFAULT 0,
@@ -208,6 +251,7 @@ async function ensureSchema(pool) {
       open_interest NUMERIC(18,8),
       open_interest_avg NUMERIC(18,8),
       funding_rate NUMERIC(18,8),
+      mark_price NUMERIC(18,8),
       volume NUMERIC(18,8),
       volume_avg NUMERIC(18,8),
       atr_3 NUMERIC(18,8),
@@ -254,6 +298,12 @@ async function ensureSchema(pool) {
       exit_time TIMESTAMPTZ,
       holding_time INTEGER,
       realized_net_pnl NUMERIC(18,8),
+      realized_pnl_price NUMERIC(18,8),
+      realized_pnl_fee NUMERIC(18,8),
+      realized_pnl_funding NUMERIC(18,8),
+      liquidation_price NUMERIC(18,8),
+      liquidation_type TEXT,
+      adl BOOLEAN DEFAULT FALSE,
       decision_source TEXT,
       take_profit NUMERIC(18,8),
       stop_loss NUMERIC(18,8),
@@ -288,6 +338,7 @@ async function ensureSchema(pool) {
       open_interest NUMERIC(18,8),
       open_interest_avg NUMERIC(18,8),
       funding_rate NUMERIC(18,8),
+      mark_price NUMERIC(18,8),
       atr_3 NUMERIC(18,8),
       atr_14 NUMERIC(18,8),
       ema20_htf NUMERIC(18,8),
@@ -299,10 +350,32 @@ async function ensureSchema(pool) {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE risk_limits (
+      symbol TEXT NOT NULL,
+      tier INTEGER NOT NULL,
+      notional_cap NUMERIC(18,8) NOT NULL,
+      max_leverage INTEGER NOT NULL,
+      imr NUMERIC(18,8) NOT NULL,
+      mmr NUMERIC(18,8) NOT NULL,
+      PRIMARY KEY(symbol, tier)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE insurance_fund (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      balance NUMERIC(18,8) NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
 
 async function truncateTables(pool) {
   const tables = [
+    "risk_limits",
+    "insurance_fund",
     "market_price_history",
     "agent_account_timeseries",
     "trades",
@@ -319,20 +392,26 @@ async function truncateTables(pool) {
 }
 
 async function main() {
-  console.log("== Database reset ==");
+  logger.info(LOG_MODULE, "== Database reset ==");
   const pool = await getPool();
 
   try {
-    console.log("Rebuilding schema...");
+    logger.info(LOG_MODULE, "Rebuilding schema...");
     await ensureSchema(pool);
 
-    console.log("Truncating tables...");
+    logger.info(LOG_MODULE, "Truncating tables...");
     await truncateTables(pool);
 
-    console.log("Seeding default prompt template...");
+    logger.info(LOG_MODULE, "Seeding default prompt template...");
     await seedDefaultPromptTemplate(pool);
 
-    console.log("Database is now clean.");
+    logger.info(LOG_MODULE, "Seeding risk limits...");
+    await seedRiskLimits(pool);
+
+    logger.info(LOG_MODULE, "Seeding insurance fund...");
+    await seedInsuranceFund(pool);
+
+    logger.info(LOG_MODULE, "Database is now clean.");
   } finally {
     await pool.end();
   }

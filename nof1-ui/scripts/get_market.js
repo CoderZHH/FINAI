@@ -25,8 +25,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import technicalindicators from "technicalindicators";
 import { loadEnvFromFile } from "./utils/loadEnv.js";
+import { logger } from "../lib/logManager.js";
 
 const { EMA, MACD, RSI, ATR, SMA } = technicalindicators;
+const LOG_MODULE = "get-market";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
@@ -43,7 +45,9 @@ try {
   ProxyAgent = null;
   setGlobalDispatcher = null;
   if (process.env.GET_MARKET_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
-    console.error("[get-market] 检测到代理配置，但未安装 'undici'。请先执行 `npm install undici`。");
+    logger.error(LOG_MODULE, "检测到代理配置，但未安装 undici。", {
+      message: error?.message,
+    });
     throw error;
   }
 }
@@ -98,7 +102,7 @@ const proxyUrl =
 
 if (ProxyAgent && setGlobalDispatcher) {
   setGlobalDispatcher(new ProxyAgent(proxyUrl));
-  console.log(`[get-market] 使用代理 ${proxyUrl}`);
+  logger.info(LOG_MODULE, `使用代理 ${proxyUrl}`);
 }
 
 /** ============================ 公共工具 ============================ */
@@ -462,7 +466,7 @@ async function handleSymbol({
   insertMarketPriceSnapshot,
   upsertMarketPrice,
 }) {
-  console.log(`Fetching ${promptSymbol} (${binanceSymbol}) data...`);
+  logger.info(LOG_MODULE, `Fetching ${promptSymbol} (${binanceSymbol}) data...`);
   const t0 = performance.now();
 
   const htfStart = Math.max(0, startMs - HTF_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
@@ -509,7 +513,8 @@ async function handleSymbol({
   });
 
   const t1 = performance.now();
-  console.log(
+  logger.info(
+    LOG_MODULE,
     `Stored ${promptSymbol}: ${minuteCandles.length} minute candles, ${higherCandles.length} HTF candles (took ${(
       (t1 - t0) /
       1000
@@ -554,35 +559,65 @@ const formatTail = (values, precision = 3) => {
 
 function printPrompt(symbol, snapshot, minuteSeries, htfSeries) {
   if (!snapshot) {
-    console.log(`\n=== ${symbol} ===\n暂无数据。`);
+    logger.info(LOG_MODULE, `=== ${symbol} ===\n暂无数据。`);
     return;
   }
 
   const lastMinute = minuteSeries[minuteSeries.length - 1] ?? {};
   const lastHTF = htfSeries[htfSeries.length - 1] ?? {};
 
-  console.log(`\n=== ${symbol} PROMPT SNAPSHOT ===`);
-  console.log(
+  logger.info(LOG_MODULE, `=== ${symbol} PROMPT SNAPSHOT ===`);
+  logger.info(
+    LOG_MODULE,
     `current_price = ${snapshot.price}, current_ema20 = ${snapshot.ema20}, current_macd = ${snapshot.macd}, current_rsi (7 period) = ${snapshot.rsi_7}`
   );
-  console.log(
+  logger.info(
+    LOG_MODULE,
     `Open Interest: Latest: ${snapshot.open_interest} Average: ${snapshot.open_interest_avg}`
   );
-  console.log(`Funding Rate: ${snapshot.funding_rate}`);
-  console.log(`Mid prices: ${formatTail(minuteSeries.map((row) => row.price_mid))}`);
-  console.log(`EMA indicators (20-period): ${formatTail(minuteSeries.map((row) => row.ema20))}`);
-  console.log(`MACD indicators: ${formatTail(minuteSeries.map((row) => row.macd))}`);
-  console.log(`RSI indicators (7-Period): ${formatTail(minuteSeries.map((row) => row.rsi_7))}`);
-  console.log(`RSI indicators (14-Period): ${formatTail(minuteSeries.map((row) => row.rsi_14))}`);
+  logger.info(LOG_MODULE, `Funding Rate: ${snapshot.funding_rate}`);
+  logger.info(
+    LOG_MODULE,
+    `Mid prices: ${formatTail(minuteSeries.map((row) => row.price_mid))}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `EMA indicators (20-period): ${formatTail(minuteSeries.map((row) => row.ema20))}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `MACD indicators: ${formatTail(minuteSeries.map((row) => row.macd))}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `RSI indicators (7-Period): ${formatTail(minuteSeries.map((row) => row.rsi_7))}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `RSI indicators (14-Period): ${formatTail(minuteSeries.map((row) => row.rsi_14))}`
+  );
 
-  console.log("\n-- 4h Context --");
-  console.log(`20-Period EMA: ${lastHTF.ema20} vs. 50-Period EMA: ${lastHTF.ema50}`);
-  console.log(`3-Period ATR: ${lastHTF.atr_3} vs. 14-Period ATR: ${lastHTF.atr_14}`);
-  console.log(
+  logger.info(LOG_MODULE, "-- 4h Context --");
+  logger.info(
+    LOG_MODULE,
+    `20-Period EMA: ${lastHTF.ema20} vs. 50-Period EMA: ${lastHTF.ema50}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `3-Period ATR: ${lastHTF.atr_3} vs. 14-Period ATR: ${lastHTF.atr_14}`
+  );
+  logger.info(
+    LOG_MODULE,
     `Current Volume: ${lastMinute.volume} vs. Average Volume: ${lastMinute.volume_avg}`
   );
-  console.log(`MACD indicators: ${formatTail(htfSeries.map((row) => row.macd))}`);
-  console.log(`RSI indicators (14-Period): ${formatTail(htfSeries.map((row) => row.rsi_14))}`);
+  logger.info(
+    LOG_MODULE,
+    `MACD indicators: ${formatTail(htfSeries.map((row) => row.macd))}`
+  );
+  logger.info(
+    LOG_MODULE,
+    `RSI indicators (14-Period): ${formatTail(htfSeries.map((row) => row.rsi_14))}`
+  );
 }
 
 /** ============================ 主入口 ============================ */

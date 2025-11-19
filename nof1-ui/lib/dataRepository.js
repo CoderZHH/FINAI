@@ -1,5 +1,9 @@
 import { getPool } from "./db.js";
 import { getRedis } from "./redis.js";
+import { getFeeRate, getFundingConfig } from "./simConfig.js";
+import { runLiquidationCheckForAccount } from "./liquidationEngine.js";
+import { distributeAdlLoss } from "./adlEngine.js";
+import { logger } from "./logManager.js";
 
 /**
  * Trading pairs tracked by the system. BINANCE_SYMBOLS env var can override the list.
@@ -19,6 +23,7 @@ const DEFAULT_SYMBOLS = (() => {
 const NORMALIZED_SYMBOLS = DEFAULT_SYMBOLS.map(normalizeSymbol);
 const BASELINE_MODEL_ID = "btc_benchmark";
 const DEFAULT_MODEL_ICON = "icon:gpt";
+const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 let promptTemplateSchemaEnsured = false;
 
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
@@ -52,6 +57,28 @@ async function ensurePromptTemplateSchema() {
 
 export function getTrackedSymbols() {
   return [...NORMALIZED_SYMBOLS];
+}
+
+export async function getMarkPrice(symbol) {
+  const pool = await getPool();
+  const normalized = normalizeSymbol(symbol);
+  const { rows } = await pool.query(
+    `
+    SELECT mark_price, price
+    FROM market_prices
+    WHERE symbol = $1
+    `,
+    [normalized]
+  );
+
+  if (!rows.length) return null;
+  const row = rows[0];
+  const mark = row.mark_price != null ? Number(row.mark_price) : null;
+  if (mark != null && Number.isFinite(mark)) {
+    return mark;
+  }
+  const fallback = row.price != null ? Number(row.price) : null;
+  return Number.isFinite(fallback) ? fallback : null;
 }
 
 function toNumber(value, fallback = 0) {
@@ -105,28 +132,116 @@ export function summarizeMarginAccount(walletBalanceInput, positions = []) {
       const quantity = Math.abs(toNumber(pos.quantity ?? 0));
       const leverageRaw = Number(pos.leverage ?? 1);
       const leverage = Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
-      const baseNotional =
-        pos.notional_usd != null ? toNumber(pos.notional_usd) : entryPrice * quantity;
-      const margin = leverage > 0 ? baseNotional / leverage : baseNotional;
+      const rawNotional =
+        pos.notional_usd != null ? Math.abs(toNumber(pos.notional_usd)) : Math.abs(entryPrice * quantity);
+      const margin = leverage > 0 ? rawNotional / leverage : rawNotional;
       const unrealized = toNumber(pos.unrealized_pnl ?? 0);
-      return {
-        totalUnrealized: acc.totalUnrealized + unrealized,
-        totalInitialMargin: acc.totalInitialMargin + margin,
-      };
+      const symbolKey = String(pos.symbol ?? "").toUpperCase();
+      acc.totalUnrealized += unrealized;
+      acc.totalInitialMargin += margin;
+      acc.marginBySymbol[symbolKey] =
+        (acc.marginBySymbol[symbolKey] ?? 0) + margin;
+      return acc;
     },
-    { totalUnrealized: 0, totalInitialMargin: 0 }
+    { totalUnrealized: 0, totalInitialMargin: 0, marginBySymbol: {} }
   );
 
   const equity = walletBalance + totals.totalUnrealized;
   const availableBalance = walletBalance - totals.totalInitialMargin;
 
-  return {
+  const result = {
     walletBalance,
     totalUnrealized: totals.totalUnrealized,
     totalInitialMargin: totals.totalInitialMargin,
+    marginBySymbol: totals.marginBySymbol,
     equity,
     availableBalance,
   };
+  logger.info("risk.summarizeMarginAccount", {
+    wallet_balance_input: walletBalance,
+    total_unrealized: totals.totalUnrealized,
+    total_initial_margin: totals.totalInitialMargin,
+    equity,
+    available_balance: availableBalance,
+    margin_by_symbol: totals.marginBySymbol,
+  });
+  return result;
+}
+
+export async function hasOpenPositionsForSymbol(symbol) {
+  if (!symbol) return false;
+  const pool = getPool();
+  const target = ensureMarketSymbol(symbol);
+  const normalized = target ? target.toUpperCase() : symbol.toUpperCase();
+  const bare = normalized.replace(/USDT$/, "");
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM trades
+    WHERE exit_time IS NULL
+      AND (symbol = $1 OR symbol = $2)
+    `,
+    [normalized, bare]
+  );
+  return Number(rows?.[0]?.total ?? 0) > 0;
+}
+
+function buildFundingRateMap(snapshot) {
+  const rates = {};
+  if (!snapshot?.prices) return rates;
+  Object.entries(snapshot.prices).forEach(([symbol, ticker]) => {
+    rates[symbol] = toNumber(ticker?.funding_rate ?? 0);
+  });
+  return rates;
+}
+
+function applyFundingSettlements(account, positions, fundingRates, fundingCfg, nowTs) {
+  const metadata = { ...(account.metadata ?? {}) };
+  const fundingMeta = { ...(metadata.funding ?? {}) };
+  if (!fundingCfg.enabled || !positions.length) {
+    return { walletDelta: 0, metadata };
+  }
+  const intervalMs = fundingCfg.interval_ms ?? FUNDING_INTERVAL_MS;
+  const lastTs = Number(fundingMeta.last_settlement_ts ?? 0);
+  if (
+    !Number.isFinite(lastTs) ||
+    lastTs <= 0 ||
+    nowTs - lastTs < intervalMs
+  ) {
+    if (!Number.isFinite(lastTs) || lastTs <= 0) {
+      fundingMeta.last_settlement_ts = nowTs;
+      metadata.funding = fundingMeta;
+    }
+    if (nowTs - (lastTs || 0) < intervalMs) {
+      return { walletDelta: 0, metadata };
+    }
+  }
+
+  let walletDelta = 0;
+  positions.forEach((position) => {
+    const symbolKey = normalizeSymbol(position.symbol);
+    const baseNotional =
+      position.notional_usd != null
+        ? Math.abs(Number(position.notional_usd))
+        : Math.abs(
+            Number(position.entry_price ?? 0) * Number(position.quantity ?? 0)
+          );
+    if (!baseNotional) return;
+    const rawRate =
+      fundingCfg.mode === "real"
+        ? toNumber(fundingRates[symbolKey] ?? 0)
+        : fundingCfg.fixed_rate;
+    if (!rawRate) return;
+    const sideSign =
+      String(position.side ?? "LONG").toUpperCase() === "LONG" ? 1 : -1;
+    const cashflow = -sideSign * baseNotional * rawRate;
+    if (!Number.isFinite(cashflow) || cashflow === 0) return;
+    walletDelta += cashflow;
+  });
+
+  fundingMeta.last_settlement_ts = nowTs;
+  metadata.funding = fundingMeta;
+  return { walletDelta, metadata };
 }
 
 async function fetchRedisTickers(symbols) {
@@ -247,6 +362,7 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     api_base_url: row.api_base_url ?? "",
     api_key: includeSecrets ? apiKey : "",
     display_icon: row.display_icon ?? DEFAULT_MODEL_ICON,
+    margin_config: row.margin_config ?? {},
     has_api_key: Boolean(apiKey),
     system_prompt: template?.system_prompt ?? "",
     user_prompt: template?.user_prompt ?? "",
@@ -327,6 +443,7 @@ function mapAccountRow(row) {
     starting_equity: startingEquity,
     total_unrealized_pnl: toNumber(row.total_unrealized_pnl ?? 0),
     human_review_required: Boolean(row.human_review_required ?? false),
+    metadata: row.runtime_metadata ?? {},
   };
 }
 
@@ -754,6 +871,7 @@ export async function createAgentModel(payload) {
     auto_run_enabled = false,
     auto_run_interval_minutes = 5,
     display_icon = DEFAULT_MODEL_ICON,
+    margin_config = {},
   } = payload;
 
   const template = await resolvePromptTemplate(prompt_template_id);
@@ -774,9 +892,10 @@ export async function createAgentModel(payload) {
       prompt_template_id,
       auto_run_enabled,
       auto_run_interval_minutes,
-      display_icon
+      display_icon,
+      margin_config
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     RETURNING *
     `,
     [
@@ -789,6 +908,7 @@ export async function createAgentModel(payload) {
       Boolean(auto_run_enabled),
       sanitizedInterval,
       display_icon ?? DEFAULT_MODEL_ICON,
+      margin_config ?? {},
     ]
   );
 
@@ -824,6 +944,7 @@ export async function updateAgentModel(modelId, updates) {
     display_icon: "display_icon",
     last_auto_run_at: "last_auto_run_at",
     next_auto_run_at: "next_auto_run_at",
+    margin_config: "margin_config",
   };
 
   const nextUpdates = { ...updates };
@@ -867,7 +988,7 @@ export async function updateAgentModel(modelId, updates) {
   });
 
   if (!fields.length) {
-    console.log("[dataRepository] updateAgentModel no fields changed", {
+    logger.info("dataRepository", "updateAgentModel no fields changed", {
       modelId,
     });
     return getAgentModelById(modelId);
@@ -877,7 +998,7 @@ export async function updateAgentModel(modelId, updates) {
 
   values.push(modelId);
 
-  console.log("[dataRepository] updateAgentModel query", {
+  logger.info("dataRepository", "updateAgentModel query", {
     modelId,
     fields,
     values,
@@ -893,7 +1014,7 @@ export async function updateAgentModel(modelId, updates) {
     values
   );
 
-  console.log("[dataRepository] updateAgentModel rows", rows);
+  logger.info("dataRepository", "updateAgentModel rows", rows);
 
   if (!rows.length) return null;
   return mapModelRow(rows[0]);
@@ -941,6 +1062,7 @@ export async function getAgentAccounts() {
       COALESCE(a.sharpe_ratio, 0) AS sharpe_ratio,
       COALESCE(a.win_rate, 0) AS win_rate,
       COALESCE(a.trade_count, 0) AS trade_count,
+      a.metadata AS runtime_metadata,
       t.system_prompt AS template_system_prompt,
       t.user_prompt AS template_user_prompt
     FROM agent_models m
@@ -1350,6 +1472,12 @@ export async function markToMarketAllModels() {
 
   const modelIds = tradable.map((account) => account.model_id);
   const positionsByModel = await getOpenPositionsGrouped(modelIds);
+  const fundingConfig = getFundingConfig();
+  let fundingRates = {};
+  if (fundingConfig.enabled) {
+    const snapshot = await getMarketSnapshot();
+    fundingRates = buildFundingRateMap(snapshot);
+  }
 
   const updatedModels = [];
   const equitySnapshots = [];
@@ -1363,29 +1491,163 @@ export async function markToMarketAllModels() {
         account.starting_equity ??
         10000
     );
-    const { realizedDelta } = await enforceExitTargets(account.model_id, modelPositions);
+    logger.info("mtm.account.start", {
+      model_id: account.model_id,
+      starting_equity: account.starting_equity,
+      latest_equity_before: account.latest_equity,
+      wallet_balance_before: account.wallet_balance ?? account.available_cash,
+      available_cash_before: account.available_cash,
+      total_unrealized_pnl_before: account.total_unrealized_pnl,
+      trade_count: account.trade_count,
+    });
+    const { realizedDelta, feesPaid } = await enforceExitTargets(
+      account.model_id,
+      modelPositions
+    );
     if (realizedDelta !== 0) {
       walletBalance += realizedDelta;
       modelPositions = await getOpenPositions(account.model_id);
     }
-    const summary = summarizeMarginAccount(walletBalance, modelPositions);
+    if (feesPaid) {
+      walletBalance = Math.max(0, walletBalance - feesPaid);
+    }
+    let metadata = account.metadata ?? {};
+    if (fundingConfig.enabled) {
+      const fundingResult = applyFundingSettlements(
+        { ...account, metadata },
+        modelPositions,
+        fundingRates,
+        fundingConfig,
+        now.getTime()
+      );
+      if (fundingResult.walletDelta) {
+        walletBalance += fundingResult.walletDelta;
+      }
+      metadata = fundingResult.metadata;
+    }
+    let summary = summarizeMarginAccount(walletBalance, modelPositions);
+    let positionMargin = summary.totalInitialMargin;
+    let marginBySymbol = { ...(summary.marginBySymbol ?? {}) };
     const startingEquity = toNumber(account.starting_equity ?? walletBalance);
-    const realizedPnl = summary.walletBalance - startingEquity;
+    logger.info("mtm.account.afterRisk", {
+      model_id: account.model_id,
+      wallet_balance_after_exits_and_funding: walletBalance,
+      metadata_after_funding: metadata,
+      summary_equity: summary.equity,
+      summary_unrealized: summary.totalUnrealized,
+      summary_available_balance: summary.availableBalance,
+    });
+
+    try {
+      const liquidationCheck = await runLiquidationCheckForAccount(
+        {
+          ...account,
+          wallet_balance: summary.walletBalance,
+          position_margin: positionMargin,
+          total_unrealized_pnl: summary.totalUnrealized,
+        },
+        modelPositions,
+        { getMarkPrice }
+      );
+      logger.info("mtm.liquidation.check", {
+        model_id: account.model_id,
+        action: liquidationCheck?.action,
+        requiredLoss: liquidationCheck?.details?.requiredLoss,
+        coveredByUserMargin: liquidationCheck?.details?.coveredByUserMargin,
+        coveredByInsurance: liquidationCheck?.details?.coveredByInsurance,
+        adlLoss: liquidationCheck?.details?.adlLoss,
+      });
+      if (liquidationCheck?.action && liquidationCheck.action !== "hold") {
+        logger.info("mtm.liquidation.triggered", {
+          model_id: account.model_id,
+          action: liquidationCheck.action,
+          details: liquidationCheck.details,
+        });
+        const details = liquidationCheck.details ?? {};
+        const closeList = Array.isArray(details.positionsToClose)
+          ? details.positionsToClose
+          : [];
+        for (const item of closeList) {
+          const symbol = item?.symbol ?? item?.position?.symbol;
+          if (!symbol) continue;
+          const exitPrice =
+            item?.markPrice ??
+            item?.liquidationPrice ??
+            (await getMarkPrice(symbol));
+          if (!Number.isFinite(exitPrice)) continue;
+          const result = await closeOpenTrades(
+            account.model_id,
+            symbol,
+            exitPrice,
+            {
+              liquidationType: details.mode ?? null,
+              liquidationPrice: item?.liquidationPrice ?? exitPrice,
+              adl: Boolean(details.adl),
+            }
+          );
+          if (result.closed > 0) {
+            walletBalance += result.realizedPnl ?? 0;
+            if (result.feesPaid) {
+              walletBalance = Math.max(0, walletBalance - result.feesPaid);
+            }
+            const released = result.releasedMargin ?? 0;
+            if ((details.mode ?? "").toLowerCase() === "isolated") {
+              const key = String(symbol).toUpperCase();
+              marginBySymbol[key] = Math.max(
+                0,
+                (marginBySymbol[key] ?? 0) - released
+              );
+            } else {
+              positionMargin = Math.max(0, positionMargin - released);
+            }
+          }
+        }
+        modelPositions = await getOpenPositions(account.model_id);
+        summary = summarizeMarginAccount(walletBalance, modelPositions);
+        positionMargin = summary.totalInitialMargin;
+        marginBySymbol = { ...(summary.marginBySymbol ?? {}) };
+
+        const adlLoss = Number(details.adlLoss ?? 0);
+        if (adlLoss > 0) {
+          try {
+            const adlResult = await distributeAdlLoss(adlLoss);
+            logger.info("adlEngine", "ADL distributed", adlResult);
+          } catch (adlError) {
+            logger.error("adlEngine", "ADL distribution failed", {
+              model_id: account.model_id,
+              error: adlError?.message,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[liquidation] execution failed", {
+        model_id: account.model_id,
+        error: error?.message,
+      });
+    }
+
+    const availableCash = walletBalance - positionMargin;
+    const latestEquity = walletBalance + summary.totalUnrealized;
+    const realizedPnl = walletBalance - startingEquity;
 
     await upsertRuntimeAccount(account.model_id, {
       starting_equity: account.starting_equity,
-      latest_equity: summary.equity,
-      available_cash: summary.walletBalance,
+      latest_equity: latestEquity,
+      available_cash: availableCash,
       total_unrealized_pnl: summary.totalUnrealized,
       trade_count: account.total_trades ?? 0,
       sharpe_ratio: account.sharpe_ratio,
       win_rate: account.win_rate,
+      metadata,
+      wallet_balance: walletBalance,
+      position_margin: positionMargin,
     });
 
     equitySnapshots.push({
       model_id: account.model_id,
-      latest_equity: summary.equity,
-      cash_available: summary.availableBalance,
+      latest_equity: latestEquity,
+      cash_available: availableCash,
       total_unrealized_pnl: summary.totalUnrealized,
       timestamp: now.getTime(),
     });
@@ -1393,13 +1655,21 @@ export async function markToMarketAllModels() {
     await appendAccountTimeseries({
       modelId: account.model_id,
       ts: now,
-      equity: summary.equity,
-      cash_available: summary.availableBalance,
+      equity: latestEquity,
+      cash_available: availableCash,
       unrealized_pnl: summary.totalUnrealized,
       realized_pnl: realizedPnl,
       sharpe: account.sharpe_ratio,
       win_rate: account.win_rate,
     });
+    logger.info("mtm.account.end", {
+      model_id: account.model_id,
+      latest_equity_after: latestEquity,
+      wallet_balance_after: walletBalance,
+      available_cash_after: availableCash,
+      total_unrealized_pnl_after: summary.totalUnrealized,
+    });
+
     updatedModels.push(account.model_id);
   }
 
@@ -1878,9 +2148,13 @@ export async function insertTrade(trade) {
       : entryPrice;
 
   const notional =
-    trade.notional != null ? toNumber(trade.notional) : executedPrice != null ? executedPrice * quantity : null;
+    trade.notional != null
+      ? Math.abs(toNumber(trade.notional))
+      : executedPrice != null
+      ? Math.abs(executedPrice * quantity)
+      : null;
   const notionalUsd =
-    trade.notional_usd != null ? toNumber(trade.notional_usd) : notional;
+    trade.notional_usd != null ? Math.abs(toNumber(trade.notional_usd)) : notional;
 
   const entryTime = trade.entry_time ? new Date(trade.entry_time) : new Date();
   const exitTime = trade.exit_time ? new Date(trade.exit_time) : null;
@@ -1951,10 +2225,10 @@ export async function insertTrade(trade) {
   );
 }
 
-function mapTradeRowToPosition(row, ticker) {
+function mapTradeRowToPosition(row, markPrice) {
   const symbol = normalizeSymbol(row.symbol);
-  const entryPrice = toNumber(row.entry_price ?? ticker?.price ?? 0);
-  const currentPrice = ticker ? toNumber(ticker.price) : entryPrice;
+  const entryPrice = toNumber(row.entry_price ?? 0);
+  const currentPrice = markPrice != null ? toNumber(markPrice) : entryPrice;
   const quantity = toNumber(row.quantity ?? 0);
   const leverage = Number(row.leverage ?? 1);
   const side = String(row.side ?? "LONG").toUpperCase();
@@ -1965,6 +2239,18 @@ function mapTradeRowToPosition(row, ticker) {
   const entryTime = row.entry_time ? safeTimestamp(row.entry_time) : null;
   const holdingSeconds =
     entryTime != null ? Math.floor((Date.now() - entryTime) / 1000) : null;
+  logger.info("positions.mapTradeRowToPosition", {
+    trade_id: row.id,
+    model_id: row.model_id,
+    symbol,
+    entry_price: entryPrice,
+    mark_price: currentPrice,
+    quantity,
+    side,
+    leverage,
+    notional_usd: notionalUsd,
+    unrealized_pnl: unrealizedPnl,
+  });
 
   return {
     id: row.id,
@@ -1990,6 +2276,7 @@ function mapTradeRowToPosition(row, ticker) {
 
 export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) {
   const pool = getPool();
+  const { liquidationType, liquidationPrice, adl } = options ?? {};
   const { rows } = await pool.query(
     `
     SELECT id, side, entry_price, quantity, leverage, entry_time, notional_usd
@@ -2006,6 +2293,8 @@ export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) 
   const now = new Date();
   let realized = 0;
   let releasedMargin = 0;
+  let totalFees = 0;
+  const takerFeeRate = getFeeRate(symbol, "taker");
 
   for (const row of rows) {
     const entryPrice = toNumber(row.entry_price ?? exitPrice);
@@ -2013,14 +2302,22 @@ export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) 
     const leverage = Number(row.leverage ?? 1);
     const direction = String(row.side ?? "LONG").toUpperCase() === "SHORT" ? -1 : 1;
     const pnl = (exitPrice - entryPrice) * qty * leverage * direction;
-    const baseNotional =
-      row.notional_usd != null ? toNumber(row.notional_usd) : entryPrice * qty;
+    const entryNotional =
+      row.notional_usd != null
+        ? Math.abs(toNumber(row.notional_usd))
+        : Math.abs(entryPrice * qty);
+    const exitNotional = Math.abs(exitPrice * qty);
+    const baseNotional = entryNotional;
     const margin = leverage > 0 ? baseNotional / leverage : baseNotional;
     const holdingMs = row.entry_time
       ? Math.max(0, now.getTime() - row.entry_time.getTime())
       : 0;
-    realized += pnl;
+    const entryFee = entryNotional * takerFeeRate;
+    const exitFee = exitNotional * takerFeeRate;
+    const netPnl = pnl - entryFee - exitFee;
+    realized += netPnl;
     releasedMargin += margin;
+    totalFees += exitFee;
 
     await pool.query(
       `
@@ -2028,18 +2325,41 @@ export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) 
       SET exit_price = $1,
           exit_time = $2,
           holding_time = $3,
-          realized_net_pnl = $4
-      WHERE id = $5
+          realized_net_pnl = $4,
+          realized_pnl_price = $4,
+          realized_pnl_fee = $5,
+          realized_pnl_funding = $6,
+          liquidation_type = $7,
+          liquidation_price = $8,
+          adl = $9
+      WHERE id = $10
       `,
-      [exitPrice, now, Math.floor(holdingMs / 1000), pnl, row.id]
+      [
+        exitPrice,
+        now,
+        Math.floor(holdingMs / 1000),
+        netPnl,
+        0,
+        0,
+        liquidationType ?? null,
+        liquidationType ? liquidationPrice ?? exitPrice : null,
+        liquidationType ? Boolean(adl) : false,
+        row.id,
+      ]
     );
   }
 
-  return { closed: rows.length, realizedPnl: realized, releasedMargin };
+  return {
+    closed: rows.length,
+    realizedPnl: realized,
+    releasedMargin,
+    feesPaid: totalFees,
+  };
 }
 
 async function enforceExitTargets(modelId, positions) {
   let realizedDelta = 0;
+  let totalFees = 0;
   let triggered = [];
   const closedSymbols = new Set();
 
@@ -2082,6 +2402,9 @@ async function enforceExitTargets(modelId, positions) {
     );
     if (closeResult.closed > 0) {
       realizedDelta += closeResult.realizedPnl ?? 0;
+      if (closeResult.feesPaid) {
+        totalFees += closeResult.feesPaid;
+      }
       triggered.push({
         symbol: position.symbol,
         reason,
@@ -2092,7 +2415,7 @@ async function enforceExitTargets(modelId, positions) {
     }
   }
 
-  return { realizedDelta, triggered };
+  return { realizedDelta, triggered, feesPaid: totalFees };
 }
 
 async function getOpenPositionsGrouped(modelIds) {
@@ -2130,14 +2453,14 @@ async function getOpenPositionsGrouped(modelIds) {
   const snapshot = await getMarketSnapshot();
   const grouped = new Map();
 
-  rows.forEach((row) => {
-    const ticker = snapshot.prices[normalizeSymbol(row.symbol)] ?? null;
-    const position = mapTradeRowToPosition(row, ticker);
+  for (const row of rows) {
+    const markPrice = await getMarkPrice(row.symbol);
+    const position = mapTradeRowToPosition(row, markPrice);
     if (!grouped.has(row.model_id)) {
       grouped.set(row.model_id, []);
     }
     grouped.get(row.model_id).push(position);
-  });
+  }
 
   modelIds.forEach((id) => {
     if (!grouped.has(id)) {
@@ -2429,7 +2752,10 @@ export async function updateMarketPricesFromBinance() {
       updated++;
     }
     
-    console.log(`[updateMarketPricesFromBinance] Updated ${updated} symbols`);
+    logger.info(
+      "dataRepository",
+      `[updateMarketPricesFromBinance] Updated ${updated} symbols`
+    );
     return updated;
   } catch (error) {
     console.error('Market price update failed:', error.message);

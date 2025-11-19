@@ -1,8 +1,9 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import CoinBadge from "./CoinBadge";
+import { resolveModelIcon } from "../lib/modelIcons";
 
 const fetcher = (url) => fetch(url).then((response) => response.json());
 
@@ -114,10 +115,33 @@ const MODEL_COLORS = [
   "bg-purple-100 text-purple-700",
 ];
 
-function ModelBadge({ modelId }) {
-  const label = humanizeModel(modelId);
-  const initial = label?.charAt(0)?.toUpperCase() || "M";
+function ModelBadge({ modelId, icon }) {
+  const info = icon ? resolveModelIcon(icon) : null;
+  const fallbackLabel = humanizeModel(modelId);
+  const initial = fallbackLabel?.charAt(0)?.toUpperCase() || "M";
   const color = MODEL_COLORS[Math.abs(modelId?.length ?? 0) % MODEL_COLORS.length];
+
+  if (info?.type === "image") {
+    return (
+      <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white shadow">
+        <img
+          src={info.src}
+          alt={info.alt ?? fallbackLabel}
+          className="h-full w-full rounded-full object-cover"
+        />
+      </span>
+    );
+  }
+
+  if (info?.type === "text") {
+    const text = info.text?.slice(0, 2)?.toUpperCase() || initial;
+    return (
+      <span className={`inline-flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${color}`}>
+        {text}
+      </span>
+    );
+  }
+
   return (
     <span className={`inline-flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${color}`}>
       {initial}
@@ -320,7 +344,7 @@ function DecisionPanel() {
 }
 
 /** ---------- 模型对话面板 ---------- */
-function ModelChatPanel() {
+function ModelChatPanel({ iconMap = {} }) {
   const { data } = useSWR("/api/agents/logs", fetcher, { refreshInterval: 8000 });
   const logs = data?.logs ?? [];
 
@@ -359,7 +383,10 @@ function ModelChatPanel() {
           >
             <summary className="flex cursor-pointer items-center justify-between gap-3 text-[11px] text-neutral-500">
               <div className="flex items-center gap-3">
-                <ModelBadge modelId={entry.model_id} />
+                <ModelBadge
+                  modelId={entry.model_id}
+                  icon={iconMap?.[entry.model_id]}
+                />
                 <div>
                   <div className="font-semibold text-neutral-900">{humanizeModel(entry.model_id)}</div>
                   <div className="text-[11px] text-neutral-500">{statusLine}</div>
@@ -511,6 +538,14 @@ function ProposalPanel() {
 
 export default function RightFeed() {
   const [activeTab, setActiveTab] = useState("positions");
+  const { data: modelsData } = useSWR("/api/models?includeSecrets=false", fetcher);
+  const iconMap = useMemo(() => {
+    const map = {};
+    (modelsData?.models ?? []).forEach((model) => {
+      map[model.model_id] = model.display_icon;
+    });
+    return map;
+  }, [modelsData]);
 
   return (
     <aside className="flex h-full flex-col border-l border-neutral-200 bg-neutral-50">
@@ -533,7 +568,7 @@ export default function RightFeed() {
         {activeTab === "positions" && <PositionsPanel />}
         {activeTab === "completed" && <CompletedPanel />}
         {activeTab === "decision" && <DecisionPanel />}
-        {activeTab === "modelchat" && <ModelChatPanel />}
+        {activeTab === "modelchat" && <ModelChatPanel iconMap={iconMap} />}
         {activeTab === "proposal" && <ProposalPanel />}
       </div>
     </aside>

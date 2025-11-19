@@ -1,0 +1,21 @@
+{
+  "symbols": {
+    "BTCUSDT": {
+      "margin_mode": "isolated"
+    },
+    "ETHUSDT": {
+      "margin_mode": "cross"
+    }
+  },
+  "fees": {
+    "default": {
+      "maker": 0.0002,
+      "taker": 0.0004
+    }
+  },
+  "funding": {
+    "enabled": false,
+    "mode": "real",
+    "fixed_rate": 0.0001
+  }
+}
