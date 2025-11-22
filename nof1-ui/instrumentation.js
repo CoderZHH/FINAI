@@ -1,3 +1,5 @@
+export const runtime = "nodejs";
+
 import { ensureAutoRunner } from "./lib/autoRunner.js";
 import { logger } from "./lib/logManager.js";
 

@@ -1,207 +1,116 @@
-# FINAI Calculation Reference
+# FINAI Calculations / 数学流程说明
 
-This document catalogs every place in the repository that performs
-non‑trivial numeric calculations. Use it as a guide when auditing logic or
-adding new metrics.
+This doc explains how every number is produced in the simulator. Formulas are
+kept close to Binance perpetual conventions. Where you see “(计算)” logs in the
+code, they follow this document.
 
----
+## 数据来源 & 关键表
+- 价格：`market_prices`（Binance futures 最新/mark price，符号统一为 `SYMBOLUSDT`）。
+- 风控：`risk_limits`（分级 IMR/MMR/最大杠杆），`sim_settings`（手续费、资金费率、margin 模式等）。
+- 账户：`agent_accounts_runtime`（wallet_balance、position_margin、available_cash、starting_equity）。
+- 持仓：`trades`（开/平仓、notional、fee、pnl、止盈止损、杠杆）。
+- 曲线：`agent_account_timeseries`（折线图数据）。
 
-## 1. Trading Engine & Risk Management
+## 符号规范 / Symbol Rules
+- 内部计算与查价：总是使用大写并自动追加 `USDT`（如 `BTC` → `BTCUSDT`）。  
+  - Helper：`ensureMarketSymbol(symbol)` 追加后缀；`normalizeSymbol` 用于展示去掉 USDT。
+- mark price 获取：`getMarkPrice(symbol)` 先规范符号再查 `market_prices`。
 
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `lib/decisionExecutor.js` | `applyDecisionSet` computes notional (`|price * quantity|`), required margin (`notional / leverage`), applies taker fees, and runs per-symbol margin locks (isolated vs cross) before updating wallet/equity snapshots. | Wallet balance is treated as total cash; initial margins and per-symbol buckets come from `summarizeMarginAccount`. |
-| `lib/decisionExecutor.js` | `closeOpenTrades` evaluates realized PnL for each position (`(exitPrice - entryPrice) * qty * leverage * direction`), holding time, releases historical margin, and accrues taker fees. | Returned fees are deducted from wallet balance inside execution / mark-to-market flows. |
-| `lib/dataRepository.js` | `summarizeMarginAccount` aggregates `totalUnrealized`, `totalInitialMargin`, wallet balance, equity (`wallet + unrealized`), available balance (`wallet - IM`), and per-symbol isolated margin buckets. | Execution flows consume the per-symbol map to enforce isolated-vs-cross margin checks. |
+## 账户语义 / Account Semantics
+- Wallet (`W`)：纯现金 + 已实现盈亏 + 已计提资金费/手续费，不含未实现盈亏。
+- Position margin (`PM`)：占用保证金总额（按分级 IMR 计算）。  
+- Available (`AV`)：`W − PM`。  
+- Equity (`EQ`)：`W + UPNL`（未实现盈亏）。
+- 初始资金：`starting_equity`（建模为 10,000 USDT，创建模型时写入）。
 
-## 2. Automated Exit Enforcement & Mark-To-Market
+## 开仓流程 / Open Trade
+1) 价格与数量  
+   - Notional `N = price * |qty|`（不再乘杠杆）。  
+2) 分级保证金  
+   - 从 `risk_limits` 取该 symbol 的阶梯：按 `N` 找到区间，得 `imr`、`mmr`、`max_leverage`。  
+   - Initial margin `IM = N * imr`。  
+3) 费用 / Fees  
+   - `fee = N * taker_rate(symbol)`（默认 `sim_settings.fees.default.taker`，可被 symbol 覆盖）。  
+   - 立即从 `wallet_balance` 扣除 fee。  
+4) 账户更新  
+   - `position_margin += IM`。  
+   - `wallet_balance = wallet_balance_before − fee`。  
+   - `available_cash = wallet_balance − position_margin`（执行完写回 runtime 账户）。  
+5) 日志  
+   - `(计算) decisionExecutor.decision.open` 记录开仓快照：`price, qty, side, notional, IM, fee, wallet`.
 
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `lib/dataRepository.js` | `enforceExitTargets` (recently added) walks every open position, compares `current_price` with `take_profit` / `stop_loss`, and programmatically closes trades via `closeOpenTrades` (fees included). | Handles both long & short logic and accumulates realized deltas for the wallet. |
-| `lib/dataRepository.js` | `markToMarketAllModels` fetches all tradable accounts, optionally flushes forced exits (`enforceExitTargets`), settles funding cashflows (based on config), recomputes wallet + equity via `summarizeMarginAccount`, and appends `agent_account_timeseries` records. | Driven by `autoRunner` market loop; funding metadata (`last_settlement_ts`) is stored per account. |
-| `lib/dataRepository.js` | `getPositionsSnapshot` and `getOpenPositionsGrouped` calculate per-model totals such as unrealized PnL and notional. | `mapTradeRowToPosition` also computes leverage-normalized notional, current price, and unrealized PnL while normalizing for short positions. |
+## 平仓流程 / Close Trade
+- 价格 `p_exit` 来自最新 mark price 或执行价；方向 `dir = +1` (LONG), `-1` (SHORT)。  
+- Realized PnL `RPnL = (p_exit − p_entry) * qty * dir`。  
+- Exit fee `fee_exit = notional_exit * taker_rate`。  
+- Wallet 更新：`wallet_new = wallet_old + RPnL − fee_exit`。  
+- 释放保证金：`position_margin -= IM`（原始开仓时锁定的 IM）。  
+- 写回 `trades`（关闭该行）、更新 runtime 账户、追加 timeseries。
 
-## 3. Historical Market Import
+## 未实现盈亏 / UPNL
+- 每次快照由 `mapTradeRowToPosition` 计算：  
+  - `mark = getMarkPrice(symbol)`  
+  - `UPNL = (mark − entry_price) * qty * dir`  
+  - `notional = mark * |qty|`（用于刷新分级显示，但不改历史 IM）。  
+- 汇总 `total_unrealized = Σ UPNL`。
 
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `scripts/get_market.js` | Collects Binance futures data and computes EMA (1m / 4h), MACD, RSI, ATR, SMA values, funding rate histories, and open interest time series. | The script aligns time windows, smooths with `technicalindicators`, and writes both the latest snapshot and long-form history into Postgres. |
+## Mark-to-Market 循环 (1s)
+触发处：`autoRunner` 市场循环 → `markToMarketAllModels`
+1) 刷新价格、更新 BTC 基准。  
+2) 对每个模型：  
+   - 取最新持仓 → 计算 UPNL。  
+   - 汇总账户：  
+     - `equity = wallet_balance + total_unrealized`  
+     - `available_balance = wallet_balance − position_margin`  
+   - 资金费（若开启）：`funding_delta = notional * funding_rate * dir`，直接加到 `wallet_balance` 与已实现 funding。  
+   - 强平检查：用 mark price + MMR 判定；如需强平，关闭仓位并走保险/ADL（见后文）。  
+   - 记录 `(计算) mtm.account.*` 日志。  
+3) 写入 `agent_account_timeseries`：时间戳、equity、wallet、unrealized。
 
-## 4. Prompt Builder Metrics
+## 风险与强平 / Risk & Liquidation
+- 分级 MMR：同 `risk_limits`，区间按最新 notional 匹配。  
+- Cross: 检查 `equity <= total_MMR`；Isolated: 按仓位逐个检查 `UPNL + IM − MMR`。  
+- 触发强平：  
+  1) 计算应亏损 `requiredLoss`。  
+  2) 用户保证金覆盖 `coveredByUserMargin`；不足部分向 `insurance_fund` 借 (`coveredByInsurance`)。  
+  3) 仍不足则分配 ADL (`adlLoss`)。  
+  4) 平仓并更新 wallet/equity/timeseries。
 
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `lib/promptBuilder.js` | `formatMarketSection` assembles per-symbol metrics (current price, EMA, MACD, RSI, open interest, funding rate) alongside compact min/HTF series. | Helper utilities (`formatNumber`, `formatSeries`, `takeLast`) control rounding and output length. |
-| `lib/promptBuilder.js` | `buildPositionStateText` derives account snapshots, unrealized PnL, Sharpe ratios, wins, margin usage, and per-position leverage & exit plan details for the LLM prompt. | Inputs come from `getRuntimeAccount`, `getOpenPositions`, and previously described calculations. |
+## 资金费 / Funding
+- 配置来源：`sim_settings.funding`（enabled, mode=real|fixed, fixed_rate）。  
+- 频率：默认 8h；settlement 时逐仓 `funding_delta = notional * rate * dir`。  
+- 记账：加到 `wallet_balance` 与 `realized_pnl_funding`，不影响 UPNL。
 
-## 5. UI Data Transformations
+## 手续费 / Fees
+- 来源：`sim_settings.fees.default` + 可选 symbol 覆盖。  
+- 开仓扣一次；平仓再扣一次；均直接减 `wallet_balance`。  
+- 展示：已实现部分计入 wallet，未在 UPNL 中重复。
 
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `components/ChartPanel.js` | `deriveChartData` buckets timestamps (currently rounded to 1 s), merges per-model equity into a single series, and converts dollar vs. percent view modes. | Also computes legend metadata and per-model summary cards (PnL = latest − starting). |
-| `components/ChartInner.js` | ECharts configuration calculates global min/max to auto-scale the Y axis, sets per-series colours (hard coded BTC/LLM palette), and renders custom end labels (`buildEndLabelConfig`) with model icons + live equity values. | `getSeriesColor` maps `display_icon` → RGB; crosshair hover logic finds nearest data point by comparing pointer value with each series. |
-| `components/RightFeed.js` | Formats positions (direction, leverage, size, PnL) and calculates aggregates like “未实现盈亏” and “账户净值” for display. | Relies on backend-provided `latest_equity`, `available_cash`, `total_unrealized_pnl`. |
+## 数据流示意 / Flow
+1) Price ingest → `market_prices`  
+2) Scheduler → LLM 决策 → `applyDecisionSet` → trades + runtime 更新  
+3) MTM 循环 → UPNL/风险/资金费 → runtime + timeseries  
+4) UI → 折线图读 `agent_account_timeseries`；卡片读 runtime + positions。
 
-## 6. Ancillary Calculations
+## Logging 规范
+- 计算链路统一前缀 `(计算)`，核心节点：  
+  - `decisionExecutor.decision.before/open/close`  
+  - `positions.mapTradeRowToPosition`  
+  - `risk.summarizeMarginAccount`  
+  - `mtm.account.start/afterRisk/end`、`mtm.liquidation.*`  
+  - `appendAccountTimeseries` 失败会 `logger.error`（包含 model_id）。  
+- 建议筛选关键字段：`model_id, symbol, notional, imr/mmr, wallet_balance, equity, available_balance, total_unrealized, funding_delta, fee`.
 
-| Location | Calculations | Notes |
-| --- | --- | --- |
-| `lib/decisionEngine.js` | Timing metrics for decision cycles (latency logging) and optional risk summarization before calling the LLM. | No financial math, but establishes the cadence for `applyDecisionSet`. |
-| `lib/autoRunner.js` | Feeds mark-to-market cadence and logs metrics such as symbols updated per loop. | The actual maths reside in `markToMarketAllModels`. |
-| `scripts/reset-db.js` | Defines numeric precision and constraints for tables such as `trades` (ensures columns exist for stop loss/take profit). | Important when checking calculations that depend on schema fields. |
+## 快速公式卡 / Quick Formulas
+- Notional: `N = price * |qty|`
+- IM: `IM = N * imr_tier`；MM: `MM = N * mmr_tier`
+- UPNL: `(mark − entry) * qty * dir`
+- RPnL: `(exit − entry) * qty * dir − fee_exit`
+- Wallet: `W = W_prev − fee_open + RPnL − fee_exit + funding_realized`
+- Equity: `EQ = W + ΣUPNL`
+- Available: `AV = W − position_margin`
 
----
-
-### How to use this reference
-1. **Risk / Equity bugs:** start at §1 and §2 (trading engine & mark-to-market).
-2. **Indicator / prompt issues:** inspect §3 & §4 calculations for rounding or data completeness.
-3. **UI discrepancies:** trace the numbers rendered in §5 back through the backend snapshot(s).
-4. **Schema changes:** ensure any new calculations are reflected both in prompt builder output and chart snapshots—see §6 for table definitions.
-
-If you add a new metric, update this document with the module, formulas, and data flow so future audits can follow the same map.
-
----
-
-## 7. Known Gaps vs. Binance Perpetual Math (Must Fix)
-
-The following discrepancies are currently unresolved. Treat all simulator
-metrics as non-Binance-compliant until these are fixed in code.
-
-1. **Notional should not scale with leverage**  
-   - Current logic uses `price * quantity * leverage`. True Binance notional is
-     simply `price * quantity`; leverage only affects required margin.
-2. **Initial/Maintenance margin uses `1 / leverage`**  
-   - Binance relies on tiered IMR/MMR tables per symbol/size. Without those,
-     positions that would be rejected or instantly liquidated appear viable.
-3. **PnL ignores funding and fees**  
-   - Maker/taker fees now reduce wallet balance in execution and forced exits,
-     but funding still needs to affect unrealized/realized splits more
-     precisely (current implementation applies a simple wallet delta every 8 h).
-4. **Wallet / equity / available balance semantics mismatch**  
-   - Wallet should include realized PnL + funding/fees but exclude unrealized
-     PnL. Available balance should be `wallet − positionMargin`. Per-position
-     IM/MM locks and funding adjustments are not modeled yet.
-5. **Mark-price liquidation logic missing**  
-   - Forced exits only occur via stop-loss/stop-profit. Binance requires
-     mark-price-based liquidation against IMR/MMR plus ADL handling.
-6. **Mark price vs. last price**  
-   - UPnL and equity use the sampled last trade price. Binance risk uses mark
-     price, so fast spikes can cause real margin calls that our simulator never
-     triggers.
-7. **Funding data unused**  
-   - Funding rates are imported and a configurable settlement (real vs fixed)
-     now adjusts wallet balances, but this is still a simplified model (no ADL,
-     no mark-price interplay). The final Binance behaviour is not yet matched.
-
-Each bullet should be backed by code changes plus regression tests before the
-simulator can be treated as a faithful Binance perpetual replica.
-
----
-
-## 8. Configuration Surfaces (Manual vs. UI)
-
-Some exchange behaviours require user-tunable parameters. The table below
-describes what must be manually configured today, where it should live in the
-UI, and how the engine should consume it.
-
-### 8.1 Margin Mode (per symbol)
-
-```jsonc
-{
-  "symbols": {
-    "BTCUSDT": { "margin_mode": "isolated" },
-    "ETHUSDT": { "margin_mode": "cross" }
-  }
-}
-```
-
-- **Configuration surface**: global simulator Settings page（“市场 / 风险”卡片）。模型管理界面只读。
-- **Model management**: read-only badge; editing belongs to the Settings view
-  because one symbol’s margin mode affects all strategies.
-- **Runtime constraint**: `/api/sim-config` 拒绝对仍有持仓或挂单的 symbol 切换模式（通过 `hasOpenPositionsForSymbol` 判断）。
-- **Risk logic**: liquidation/margin formulas branch on
-  `cfg.symbols[symbol].margin_mode`. Isolated uses per-position margin buckets;
-  cross uses wallet balance as a shared pool.
-
-### 8.2 Fee Rates (maker / taker)
-
-```jsonc
-{
-  "fees": {
-    "default": { "maker": 0.0002, "taker": 0.0004 },
-    "BTCUSDT": { "maker": 0.00018, "taker": 0.00036 }
-  }
-}
-```
-
-- **Configuration surface**: Settings 页面 “手续费” 卡片显示默认值与特定交易对的覆盖值。
-- **Fill handling**: `notional = fill_price * |qty|`, fee = `notional *
-  getFeeRate(symbol, liquidity)`. Deduct from `wallet_balance` immediately and
-  book under `realized_pnl_fee`.  
-  - Maker/taker choice should come from execution semantics (e.g., IOC vs.
-    resting order fills).
-- **Model UI**: Optional display of the active tier, but editing remains a
-  Settings responsibility.
-
-### 8.3 Funding Controls
-
-```jsonc
-{
-  "funding": {
-    "enabled": true,
-    "mode": "real",      // or "fixed"
-    "fixed_rate": 0.0001 // only used when mode = "fixed"
-  }
-}
-```
-
-- **Configuration surface**: Settings → “资金费” 卡片。  
-  - `enabled=false` → skip funding entirely.  
-  - `mode="real"` → use imported Binance funding series.  
-  - `mode="fixed"` → override with `fixed_rate` for stress scenarios.
-- **Scheduler**: every 8 h (or configurable), call `applyFunding(position,
-  rate)` for every open position.  
-  - Rate source = market history if `mode="real"`, else the fixed rate.
-- **Accounting**: funding adjustments hit `wallet_balance` and
-  `realized_pnl_funding`; they do **not** change unrealized PnL.
-
-### 8.4 Unified Config Loader
-
-Load settings once (e.g., `const cfg = loadConfig("sim_config.json");`) and
-inject wherever needed:
-
-- Margin logic reads `cfg.symbols[symbol].margin_mode`.
-- Order fills query `cfg.fees`.
-- Funding scheduler inspects `cfg.funding`.
-
-### 8.5 What not to hard-code
-
-The following inputs must come from Binance data feeds, not from manual config:
-
-- Tiered IMR/MMR schedules and maximum leverage per tier.
-- Mark price, last price, funding rate values.
-- Tick size, lot size, risk limits/notional caps.
-
-Those belong in the market-data ingestion layer or exchange emulator—not in
-Settings or model management.
-
----
-
-## 9. Insurance Fund & Liquidation Loss Handling (2025‑03 Update)
-
-| Location | What is calculated | Notes |
-| --- | --- | --- |
-| `scripts/reset-db.js` | Seeds a global `insurance_fund` table (id = 1) with an initial balance of 100 000 USDT whenever the schema is rebuilt. | Table is truncated alongside other runtime tables to keep test runs deterministic. |
-| `lib/insuranceFund.js` | Exposes `getInsuranceFundBalance`, `creditInsuranceFund`, and `debitInsuranceFund` helpers. Debits saturate at zero and return `{ debited, remainingBalance }`. | All liquidation logic goes through these helpers—no other module touches the table directly. |
-| `lib/liquidationEngine.js` | `runLiquidationCheckForAccount` now reports `requiredLoss`, `coveredByUserMargin`, `coveredByInsurance`, and `adlLoss`. It consumes the insurance fund to cover losses beyond user margin and only flags ADL when both user cash and fund are exhausted. | Isolated positions limit the user cap to per-position margin; cross mode uses `wallet_balance + position_margin`. |
-| `lib/adlEngine.js` | `distributeAdlLoss(adlLoss)` ranks profitable accounts by a Binance-style score (profit ratio × leverage proxy) and deducts ADL losses from the highest tier first. Updates `wallet_balance`, `latest_equity`, and `realized_pnl_price`. | Returns `{ distributed, affected[] }` for logging/monitoring. |
-| `lib/dataRepository.js` | `markToMarketAllModels` closes liquidated positions, adjusts wallet/margin, and when `details.adlLoss > 0` calls `distributeAdlLoss`, logging the distribution outcome. | Ensures wallet/equity snapshots incorporate forced exits, insurance coverage, and ADL deductions before persisting runtime rows + timeseries. |
-| `lib/decisionExecutor.js` | `applyDecisionSet` enforces consistent wallet semantics (`latest_equity = wallet + unrealized`, `available_cash = wallet − position_margin`) so execution and mark-to-market share the same base values after insurance/ADL flows. | Prevents drift between intracycle executions and periodic mark-to-market snapshots. |
-
-### 9.1 Loss Flow Overview
-
-1. **Forced exit** (`markToMarketAllModels` → `runLiquidationCheckForAccount`): compute total liquidation loss and the portion user margin can cover.
-2. **Insurance coverage**: `debitInsuranceFund` absorbs remaining loss up to the fund balance, producing `coveredByInsurance`.
-3. **ADL spillover**: residual `adlLoss` triggers `distributeAdlLoss`, which deducts from profitable accounts in descending score order.
-4. **Persistence**: liquidated accounts update wallet/equity/margin; ADL-affected accounts are updated via `distributeAdlLoss`; timeseries snapshots reflect the post-loss state.
+## 注意事项 / Caveats
+- 价格、IMR/MMR 必须用标准化符号（自动补 USDT）；展示再去后缀。  
+- Margin locks 调整 `position_margin`，不直接加减钱包；钱包只反映现金与已实现项。  
+- 若 UI 显示异常，先对照 runtime 表字段与 `(计算)` 日志，再查 timeseries 是否写入。

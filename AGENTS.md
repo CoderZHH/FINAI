@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The trading app lives in `nof1-ui`. `app/` holds the Next.js App Router routes plus `/api/*` handlers that orchestrate Redis, Postgres, and the LLM execution engine defined in `lib/`. UI primitives sit in `components/`, global styles in `app/globals.css`, and `public/` contains static glyphs used by the model cards. Operational scripts (`scripts/reset-db.js`, `scripts/get_market.js`) manage schema resets, Binance imports, and BTC benchmark funding. Prompt templates are managed inside the `/models` page and persisted exclusively via `prompt_templates`—models now only reference those rows by id.
+The trading app lives in `nof1-ui`. `app/` holds the Next.js App Router routes plus `/api/*` handlers that orchestrate Redis, Postgres, and the LLM execution engine defined in `lib/`. UI primitives sit in `components/`, global styles in `app/globals.css`, and `public/` contains static glyphs used by the model cards. Operational scripts (`scripts/reset-db.js`, `scripts/get_market.js`) manage schema resets, Binance imports, and BTC benchmark funding. Prompt templates are managed inside the `/models` page and persisted exclusively via prompt_templates`—models now only reference those rows by id.
 
 ## Build, Test, and Development Commands
 - `npm run dev` — loads `.env.local`, resets the schema, seeds templates + accounts, then runs `next dev` with the auto-runner + market loop enabled.
@@ -22,3 +22,6 @@ Follow the existing short commit style (`api: stream pending logs`, `charts: add
 
 ## Security & Configuration Tips
 Keep secrets in `.env.local` only. Required values: `POSTGRES_URL`, optional `POSTGRES_SSL`, `REDIS_URL`, LLM credentials, and Binance overrides (`BINANCE_BASE_URL`, `GET_MARKET_*`). `scripts/reset-db.js` now creates only the live tables (`agent_models`, `agent_accounts_runtime`, `agent_account_timeseries`, `market_prices`, `market_price_history`, `prompt_templates`, `agent_logs`, `trades`), so run it only when you intend to drop everything. Benchmark metadata (BTC quantity) lives inside `agent_accounts_runtime.metadata`; double-check the target database before running destructive scripts.
+
+## Simulator Config (no sim_config.json)
+Runtime simulator settings (fees, funding) are stored in Postgres table `sim_settings` and seeded by `scripts/reset-db.js`; `sim_config.json` is deprecated. Adjust fees/funding via `/settings` UI or by changing the seed defaults. No ALTERs are needed because `npm run dev` recreates the schema each run.

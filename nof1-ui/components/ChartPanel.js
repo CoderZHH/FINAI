@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
-import { resolveModelIcon } from "../lib/modelIcons";
+import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/modelIcons";
 import CoinBadge from "./CoinBadge";
 
 /** 关闭 SSR 的图表组件 */
@@ -40,6 +40,56 @@ const COLOR_PALETTE = [
 ];
 
 const BASELINE_MODEL_ID = "btc_benchmark";
+const PROVIDER_DEFAULT_BASE_URL = {
+  openai: "https://api.openai.com/v1",
+  deepseek: "https://api.deepseek.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  qwen: "https://dashscope.aliyuncs.com",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  moonshot: "https://api.moonshot.ai/v1",
+  xai_grok: "https://api.x.ai/v1",
+  doubao: "https://ark.cn-beijing.volces.com/api/v3",
+  minimax: "https://api.minimax.io/v1",
+  wenxin: "https://api.baidu.com/ernie-bot/v1",
+  custom: "",
+};
+
+const PROVIDER_ICON_MAP = {
+  openai: "icon:gpt",
+  deepseek: "icon:deepseek",
+  anthropic: "icon:claude",
+  gemini: "icon:gemini",
+  qwen: "icon:qwen",
+  zhipu: "icon:zhipu",
+  moonshot: "icon:kimi",
+  xai_grok: "icon:grok",
+  doubao: "icon:doubao",
+  minimax: "icon:minimax",
+  wenxin: "icon:wenxin",
+  custom: DEFAULT_MODEL_ICON,
+};
+
+function inferProviderFromBaseUrl(baseUrl = "") {
+  const normalized = baseUrl.trim().toLowerCase();
+  if (!normalized) return "custom";
+  const match = Object.entries(PROVIDER_DEFAULT_BASE_URL).find(
+    ([, url]) => url && url.trim().toLowerCase() === normalized
+  );
+  return (match?.[0] ?? "custom");
+}
+
+function resolveIconForModel(model) {
+  const rawIcon = normaliseIconValue(model?.display_icon ?? model?.icon ?? "");
+  const provider = inferProviderFromBaseUrl(model?.api_base_url ?? "");
+  const providerIcon = PROVIDER_ICON_MAP[provider] || DEFAULT_MODEL_ICON;
+
+  if (!rawIcon) return providerIcon;
+  if (rawIcon === DEFAULT_MODEL_ICON && provider && provider !== "openai") {
+    return providerIcon;
+  }
+  return rawIcon;
+}
 
 function renderIcon(iconValue) {
   const info = resolveModelIcon(iconValue);
@@ -206,7 +256,7 @@ export default function ChartPanel() {
     const map = new Map();
     (modelsData?.models ?? []).forEach((model) => {
       if (model?.model_id) {
-        map.set(model.model_id, model.display_icon ?? model.icon ?? null);
+        map.set(model.model_id, resolveIconForModel(model));
       }
     });
     return map;
@@ -218,7 +268,13 @@ export default function ChartPanel() {
   );
 
   const cards = useMemo(
-    () => deriveCards(modelsData?.models ?? []),
+    () =>
+      deriveCards(
+        (modelsData?.models ?? []).map((model) => ({
+          ...model,
+          display_icon: resolveIconForModel(model),
+        })),
+      ),
     [modelsData],
   );
 

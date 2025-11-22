@@ -83,6 +83,15 @@ function getProviderIconValue(providerId, currentIcon, displayName) {
   return PROVIDER_ICON_MAP[providerId] || DEFAULT_MODEL_ICON;
 }
 
+function resolveDisplayIcon(providerId, displayIcon, displayName) {
+  const provider = providerId || DEFAULT_PROVIDER;
+  // If icon is missing or still the default while provider is not OpenAI, prefer the provider icon.
+  if (!displayIcon || (displayIcon === DEFAULT_MODEL_ICON && provider !== "openai")) {
+    return getProviderIconValue(provider, displayIcon, displayName);
+  }
+  return displayIcon;
+}
+
 const PLACEHOLDER_LIBRARY = [
   {
     token: "minutes_since_start",
@@ -218,89 +227,67 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
   return (
     <div
       className={clsx(
-        "group relative overflow-hidden rounded-3xl border p-5 shadow-md transition-all duration-300 cursor-pointer",
+        "group relative flex flex-col overflow-hidden rounded-3xl border p-6 transition-all duration-300",
         active
-          ? "border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50 shadow-lg shadow-purple-200/50 scale-105"
-          : "border-slate-200 bg-gradient-to-br from-white to-slate-50 hover:shadow-xl hover:shadow-slate-200/50 hover:-translate-y-1"
+          ? "border-blue-500/50 bg-blue-50/50 shadow-lg ring-1 ring-blue-500/20"
+          : "border-gray-200/60 bg-white hover:border-gray-300 hover:shadow-xl hover:shadow-gray-200/50 hover:-translate-y-0.5"
       )}
     >
-      {/* 背景装饰 */}
-      <div className={clsx(
-        "absolute inset-0 -z-10 opacity-0 transition-opacity duration-500 group-hover:opacity-100",
-        active
-          ? "bg-gradient-to-br from-purple-100/60 via-pink-50/40 to-transparent"
-          : "bg-gradient-to-br from-indigo-50/60 via-blue-50/40 to-transparent"
-      )} />
-
-      {/* 头部区域 */}
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex-1">
-          <h4 className="text-base font-bold text-slate-900 group-hover:text-purple-600 transition-colors duration-300 flex items-center gap-2">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-            </svg>
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h4 className={clsx("text-lg font-semibold tracking-tight transition-colors", active ? "text-blue-700" : "text-gray-900")}>
             {template.template_name}
           </h4>
-          <p className="text-xs text-slate-500 mt-1">{template.description || "无描述"}</p>
+          <p className="text-sm text-gray-500 mt-1 line-clamp-2">{template.description || "无描述"}</p>
         </div>
-        {template.is_default ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 px-3 py-1 text-[10px] font-bold text-white shadow-md">
-            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-            </svg>
+        {template.is_default && (
+          <span className="shrink-0 inline-flex items-center rounded-full bg-gray-900 px-2.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
             默认
           </span>
-        ) : null}
+        )}
       </div>
 
-      {/* Token 标签 */}
-      <div className="flex flex-wrap gap-1.5 mb-4">
-        {template.placeholder_tokens?.slice(0, 6).map((token) => (
-          <span key={token} className="inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-1 text-[11px] font-mono font-semibold text-indigo-700 ring-1 ring-indigo-200">
+      <div className="flex flex-wrap gap-2 mb-6 flex-1 content-start">
+        {template.placeholder_tokens?.slice(0, 5).map((token) => (
+          <span key={token} className="inline-flex items-center rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
             {`{${token}}`}
           </span>
         ))}
-        {template.placeholder_tokens?.length > 6 ? (
-          <span className="inline-flex items-center rounded-full bg-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600">
-            +{template.placeholder_tokens.length - 6}
+        {template.placeholder_tokens?.length > 5 && (
+          <span className="inline-flex items-center rounded-md bg-gray-50 px-2 py-1 text-xs font-medium text-gray-400">
+            +{template.placeholder_tokens.length - 5}
           </span>
-        ) : null}
+        )}
       </div>
 
-      {/* 操作按钮 */}
-      <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-200/60">
+      <div className="flex items-center gap-2 pt-4 border-t border-gray-100">
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-purple-500 to-pink-600 px-4 py-1.5 text-xs font-semibold text-white shadow-md transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-purple-300/50 active:scale-95"
           onClick={() => onSelect(template)}
+          className="flex-1 rounded-xl bg-gray-900 py-2 text-xs font-medium text-white transition-transform active:scale-95 hover:bg-gray-800"
         >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
           编辑
         </button>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all duration-300 hover:bg-slate-200 hover:scale-105 active:scale-95"
-            onClick={() => onDuplicate(template)}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-            复制
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-rose-500 to-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-rose-300/50 active:scale-95"
-            onClick={() => onDelete(template)}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-            删除
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => onDuplicate(template)}
+          className="rounded-xl bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-200 active:scale-95"
+          title="复制"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(template)}
+          className="rounded-xl bg-gray-100 px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 active:scale-95"
+          title="删除"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
       </div>
     </div>
   );
@@ -345,207 +332,149 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex animate-in fade-in duration-300">
-      <button className="flex-1 bg-slate-900/50 backdrop-blur-sm" type="button" onClick={onClose} aria-label="关闭" />
-      <div className="h-full w-full max-w-2xl overflow-y-auto border-l border-slate-200 bg-gradient-to-br from-white to-slate-50 shadow-2xl animate-in slide-in-from-right duration-300">
-        {/* 顶部标题栏 */}
-        <div className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/80 backdrop-blur-md p-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-purple-500">提示词模板</p>
-              <h2 className="text-2xl font-bold text-slate-900 mt-1 flex items-center gap-2">
-                <svg className="w-6 h-6 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                {draft?.id ? "编辑模板" : "新建模板"}
-              </h2>
-            </div>
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-gray-900/20 backdrop-blur-sm transition-opacity" onClick={onClose} />
+      <div className="relative h-full w-full max-w-2xl bg-white shadow-2xl animate-in slide-in-from-right duration-300 flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 bg-white/80 backdrop-blur-md sticky top-0 z-10">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">{draft?.id ? "编辑模板" : "新建模板"}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">配置 AI 的角色设定与任务指令</p>
+          </div>
+          <div className="flex items-center gap-2">
             <button
-              type="button"
               onClick={onClose}
-              className="rounded-full border-2 border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-md transition-all duration-300 hover:scale-105 hover:bg-slate-50 hover:shadow-lg active:scale-95"
+              className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
             >
-              [X] 关闭
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
         </div>
 
-        <form
-          className="p-6 space-y-6"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSave();
-          }}
-        >
-          {/* 模板名称 */}
-          <label className="block">
-            <span className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
-              <svg className="w-4 h-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-              </svg>
-              模板名称
-              <span className="text-rose-500">*</span>
-            </span>
-            <input
-              required
-              value={draft.template_name}
-              onChange={(event) => handleFieldChange("template_name", event.target.value)}
-              placeholder="例如：积极交易策略"
-              className="mt-2 w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm transition-all duration-300 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-4 focus:ring-purple-100 hover:border-slate-300"
-            />
-          </label>
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {/* Basic Info */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">模板名称 <span className="text-red-500">*</span></label>
+              <input
+                required
+                value={draft.template_name}
+                onChange={(event) => handleFieldChange("template_name", event.target.value)}
+                placeholder="例如：积极交易策略"
+                className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">模板描述</label>
+              <input
+                value={draft.description}
+                onChange={(event) => handleFieldChange("description", event.target.value)}
+                placeholder="简要描述这个模板的用途"
+                className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+              />
+            </div>
+            <label className="flex items-center gap-3 p-4 rounded-xl border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.is_default)}
+                onChange={(event) => handleFieldChange("is_default", event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <div>
+                <span className="block text-sm font-medium text-gray-900">设为默认模板</span>
+                <span className="block text-xs text-gray-500">新创建的模型将自动引用此模板</span>
+              </div>
+            </label>
+          </div>
 
-          {/* 模板描述 */}
-          <label className="block">
-            <span className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
-              <svg className="w-4 h-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              模板描述
-            </span>
-            <input
-              value={draft.description}
-              onChange={(event) => handleFieldChange("description", event.target.value)}
-              placeholder="简要描述这个模板的用途"
-              className="mt-2 w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm transition-all duration-300 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-4 focus:ring-purple-100 hover:border-slate-300"
-            />
-          </label>
-
-          {/* 默认模板开关 */}
-          <label className="flex items-center gap-3 rounded-2xl border-2 border-purple-200 bg-gradient-to-r from-purple-50 to-pink-50 px-5 py-4 text-sm text-slate-700 cursor-pointer transition-all duration-300 hover:shadow-lg hover:scale-[1.02]">
-            <input
-              type="checkbox"
-              checked={Boolean(draft.is_default)}
-              onChange={(event) => handleFieldChange("is_default", event.target.checked)}
-              className="h-5 w-5 rounded border-purple-300 text-purple-600 focus:ring-purple-400 transition-all duration-300"
-            />
-            <span className="font-semibold flex items-center gap-2">
-              <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-              </svg>
-              设为默认模板
-              <span className="text-xs font-normal text-purple-600">(新模型会自动引用)</span>
-            </span>
-          </label>
-
-          {/* 提示词编辑区 */}
-          <div className="grid gap-5 lg:grid-cols-2">
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                系统提示词
-              </span>
+          {/* Prompts */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                系统提示词 (System)
+              </label>
               <textarea
                 ref={systemRef}
                 value={draft.system_prompt}
                 onFocus={() => setActiveField("system_prompt")}
                 onChange={(event) => handleFieldChange("system_prompt", event.target.value)}
-                rows={14}
+                rows={12}
                 placeholder="定义 AI 的角色和行为规范..."
-                className="rounded-2xl border-2 border-slate-200 bg-white/90 p-4 text-sm leading-relaxed text-slate-800 shadow-inner transition-all duration-300 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-100 hover:border-slate-300"
+                className="flex-1 rounded-xl border-gray-200 bg-gray-50 p-4 text-sm leading-relaxed text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors resize-none"
               />
-            </label>
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-                用户提示词
-              </span>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                用户提示词 (User)
+              </label>
               <textarea
                 ref={userRef}
                 value={draft.user_prompt}
                 onFocus={() => setActiveField("user_prompt")}
                 onChange={(event) => handleFieldChange("user_prompt", event.target.value)}
-                rows={14}
+                rows={12}
                 placeholder="提供具体的任务指令和上下文信息..."
-                className="rounded-2xl border-2 border-slate-200 bg-white/90 p-4 text-sm leading-relaxed text-slate-800 shadow-inner transition-all duration-300 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100 hover:border-slate-300"
+                className="flex-1 rounded-xl border-gray-200 bg-gray-50 p-4 text-sm leading-relaxed text-gray-900 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500 transition-colors resize-none"
               />
-            </label>
-          </div>
-
-          {/* 模板占位符显示 */}
-          <div className="rounded-2xl border-2 border-emerald-200 bg-gradient-to-r from-emerald-50 to-teal-50 p-4">
-            <p className="text-sm font-bold text-emerald-800 mb-3 flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 8 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-              </svg>
-              已使用的占位符
-              {draft.placeholder_tokens?.length > 0 && (
-                <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-xs font-bold text-white">
-                  {draft.placeholder_tokens.length}
-                </span>
-              )}
-            </p>
-            <PlaceholderChips tokens={draft.placeholder_tokens} />
-            {!draft.placeholder_tokens?.length && (
-              <p className="text-xs text-emerald-600 italic">尚未使用任何占位符</p>
-            )}
-          </div>
-
-          {/* 可插入占位符 */}
-          <div className="rounded-2xl border-2 border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 p-5">
-            <p className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              可插入的占位符
-              <span className="text-xs font-normal text-blue-600">(点击插入到光标位置)</span>
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {placeholders.map((item) => (
-                <button
-                  key={item.token}
-                  type="button"
-                  onClick={() => insertToken(item.token)}
-                  className="inline-flex items-center gap-1 rounded-full border-2 border-blue-200 bg-white px-3 py-1.5 text-xs font-mono font-semibold text-blue-700 shadow-sm transition-all duration-300 hover:scale-110 hover:border-blue-400 hover:bg-blue-50 hover:shadow-md active:scale-95"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                  {`{${item.token}}`}
-                </button>
-              ))}
             </div>
           </div>
 
-          {/* 提交按钮 */}
-          <button className="flex justify-end gap-3 pt-4 border-t-2 border-slate-200" />
-          {/* 提交按钮 */}
-          <div className="flex justify-end gap-3 pt-4 border-t-2 border-slate-200">
+          {/* Placeholders */}
+          <div className="space-y-4">
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                已使用的占位符
+              </p>
+              <PlaceholderChips tokens={draft.placeholder_tokens} />
+              {!draft.placeholder_tokens?.length && (
+                <p className="text-xs text-gray-400 italic">尚未使用任何占位符</p>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+              <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-3 flex items-center justify-between">
+                <span>可插入变量</span>
+                <span className="text-[10px] font-normal normal-case opacity-70">点击插入到光标位置</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {placeholders.map((item) => (
+                  <button
+                    key={item.token}
+                    type="button"
+                    onClick={() => insertToken(item.token)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs font-mono font-medium text-blue-700 shadow-sm transition-all hover:border-blue-300 hover:shadow-md active:scale-95"
+                    title={item.description}
+                  >
+                    {`{${item.token}}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-100 px-6 py-4 bg-gray-50/50 flex justify-end gap-3 sticky bottom-0">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full border-2 border-slate-300 bg-white px-6 py-2.5 text-sm font-semibold text-slate-700 shadow-md transition-all duration-300 hover:scale-105 hover:bg-slate-50 hover:shadow-lg active:scale-95"
+              className="px-5 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
             >
-              [X] 取消
+              取消
             </button>
             <button
               type="submit"
+              onClick={(e) => { e.preventDefault(); onSave(); }}
               disabled={saving}
-              className="group inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-purple-300/50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 active:scale-95"
+              className="px-6 py-2.5 rounded-xl text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {saving ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  保存中...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  保存模板
-                </>
-              )}
+                {saving ? "保存中..." : "保存模板"}
             </button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
   );
@@ -744,140 +673,82 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
   return (
     <div
       onClick={() => onEdit(model)}
-      className="group relative overflow-hidden rounded-2xl border border-neutral-200/50 bg-white/90 p-5 shadow-sm backdrop-blur-sm transition-all duration-500 ease-out cursor-pointer hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 active:scale-[0.98]"
+      className="group relative flex flex-col justify-between overflow-hidden rounded-3xl border border-gray-200 bg-white p-6 transition-all duration-300 hover:shadow-xl hover:shadow-gray-200/50 hover:-translate-y-0.5 cursor-pointer"
     >
-      {/* 简约悬浮效果 */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-neutral-50 via-white to-neutral-50 opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
-
-      {/* 顶部区域 */}
-      <div className="flex items-center justify-between gap-4 mb-4">
-        <div className="flex items-center gap-3">
-          <div className="transition-transform duration-500 group-hover:scale-110 group-hover:rotate-3">
-            <ModelAvatar icon={model.display_icon} />
+      <div className="flex items-start justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <div className="relative">
+             <ModelAvatar icon={model.display_icon} size="lg" />
+             {model.auto_run_enabled && (
+                <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-white shadow-sm">
+                    <span className="h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" />
+                </span>
+             )}
           </div>
           <div>
-            <h3 className="text-lg font-bold text-neutral-900 transition-all duration-300 group-hover:text-neutral-700">
+            <h3 className="text-base font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
               {model.display_name || model.model_id}
             </h3>
-            <p className="text-xs font-mono text-neutral-400 mt-0.5">
-              {model.model_id}
+            <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs font-medium text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md border border-gray-100">
+                    {model.model_id}
+                </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <button
+                onClick={(e) => { e.stopPropagation(); onToggleAutoRun(model); }}
+                className={clsx(
+                    "p-2 rounded-full transition-colors",
+                    model.auto_run_enabled ? "bg-amber-100 text-amber-600 hover:bg-amber-200" : "bg-green-100 text-green-600 hover:bg-green-200"
+                )}
+                title={model.auto_run_enabled ? "暂停自动运行" : "开启自动运行"}
+            >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    {model.auto_run_enabled ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6" />
+                    ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                    )}
+                </svg>
+            </button>
+            <button
+                onClick={(e) => { e.stopPropagation(); onDelete(model); }}
+                className="p-2 rounded-full bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 transition-colors"
+                title="删除模型"
+            >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+            </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mb-6">
+         <div className="rounded-2xl bg-gray-50 p-3">
+            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">状态</p>
+            <p className={clsx("text-sm font-semibold", model.auto_run_enabled ? "text-green-600" : "text-gray-500")}>
+                {runningLabel}
             </p>
-          </div>
-        </div>
-
-        {/* 状态指示器 */}
-        <div className="flex items-center gap-2">
-          {model.auto_run_enabled && (
-            <div className="h-2 w-2 rounded-full bg-green-400 animate-pulse shadow-lg shadow-green-400/50" />
-          )}
-          <div className={clsx(
-            "h-8 w-8 rounded-full flex items-center justify-center transition-all duration-300",
-            model.auto_run_enabled
-              ? "bg-green-50 text-green-600 group-hover:bg-green-100"
-              : "bg-neutral-100 text-neutral-400 group-hover:bg-neutral-200"
-          )}>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              {model.auto_run_enabled ? (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              ) : (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              )}
-            </svg>
-          </div>
-        </div>
+         </div>
+         <div className="rounded-2xl bg-gray-50 p-3">
+            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">审核</p>
+            <p className="text-sm font-semibold text-gray-700">
+                {model.human_review_required ? "需人工确认" : "自动执行"}
+            </p>
+         </div>
       </div>
 
-      {/* 简约标签 */}
-      <div className="flex flex-wrap gap-2 mb-4">
-        <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[10px] font-medium text-neutral-600 transition-colors duration-300 group-hover:bg-neutral-200">
-          {model.human_review_required ? "人工审核" : "自动执行"}
-        </span>
-        <span className={clsx(
-          "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-medium transition-all duration-300",
-          model.auto_run_enabled
-            ? "bg-green-100 text-green-700 group-hover:bg-green-200"
-            : "bg-neutral-100 text-neutral-500"
-        )}>
-          {runningLabel}
-        </span>
-      </div>
-
-      {/* 信息区 */}
-      <div className="space-y-2.5 text-xs text-neutral-600 mb-4">
-        <div className="flex items-start gap-2 transition-transform duration-300 hover:translate-x-1">
-          <span className="mt-0.5 text-neutral-400">•</span>
-          <div className="flex-1">
-            <span className="text-neutral-500">模板：</span>
-            <span className="ml-1 font-medium text-neutral-700">
-              {model.prompt_template?.name || "自定义"}
-            </span>
-          </div>
+      <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+        <div className="flex flex-col">
+            <span className="text-[10px] text-gray-400">上次运行</span>
+            <span className="text-xs font-medium text-gray-600" title={lastRunTitle}>{lastRunLabel}</span>
         </div>
-
-        <div className="flex items-start gap-2 transition-transform duration-300 hover:translate-x-1">
-          <span className="mt-0.5 text-neutral-400">•</span>
-          <div className="flex-1">
-            <span className="text-neutral-500">系统：</span>
-            <span className="ml-1 text-neutral-600 line-clamp-1">
-              {truncate(model.system_prompt, 60)}
-            </span>
-          </div>
+        <div className="flex flex-col items-end">
+            <span className="text-[10px] text-gray-400">下次运行</span>
+            <span className="text-xs font-medium text-gray-600" title={nextRunTitle}>{nextRunLabel}</span>
         </div>
-
-        <div className="flex items-start gap-2 transition-transform duration-300 hover:translate-x-1">
-          <span className="mt-0.5 text-neutral-400">•</span>
-          <div className="flex-1">
-            <span className="text-neutral-500">用户：</span>
-            <span className="ml-1 text-neutral-600 line-clamp-1">
-              {truncate(model.user_prompt, 60)}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* 底部时间信息 */}
-      <div className="flex items-center justify-between gap-3 border-t border-neutral-100 pt-3 text-[10px] text-neutral-400">
-        <div className="flex items-center gap-1.5">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span title={lastRunTitle}>{lastRunLabel}</span>
-        </div>
-        <div className={clsx(
-          "flex items-center gap-1.5 font-medium transition-colors duration-300",
-          model.auto_run_enabled ? "text-neutral-600" : "text-neutral-400"
-        )} title={nextRunTitle}>
-          {nextRunLabel}
-        </div>
-      </div>
-
-      {/* 悬浮操作按钮 */}
-      <div className="absolute top-3 right-3 flex gap-1.5 opacity-0 transition-all duration-300 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2">
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleAutoRun(model);
-          }}
-          className={clsx(
-            "rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all duration-300 hover:scale-110 active:scale-95 shadow-sm",
-            model.auto_run_enabled
-              ? "bg-amber-500/90 text-white hover:bg-amber-600"
-              : "bg-green-500/90 text-white hover:bg-green-600"
-          )}
-        >
-          {model.auto_run_enabled ? "暂停" : "启动"}
-        </button>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete(model);
-          }}
-          className="rounded-lg bg-neutral-800/90 px-2.5 py-1.5 text-[10px] font-semibold text-white transition-all duration-300 hover:scale-110 hover:bg-neutral-900 active:scale-95 shadow-sm"
-        >
-          删除
-        </button>
       </div>
     </div>
   );
@@ -901,11 +772,7 @@ function FormModal({
     ? templateOptions.find((tpl) => tpl.id === formState.prompt_template_id)
     : null;
   const providerValue = formState.provider ?? DEFAULT_PROVIDER;
-  const providerIconValue = getProviderIconValue(
-    providerValue,
-    formState.display_icon,
-    formState.display_name
-  );
+  const providerIconValue = getProviderIconValue(providerValue, formState.display_icon, formState.display_name);
   useEffect(() => {
     if (selectedTemplate) {
       onChange((prev) => ({
@@ -965,113 +832,112 @@ function FormModal({
   };
 
   return (
-    <div className="relative w-full max-w-2xl rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl">
-      <div className="flex items-start justify-between gap-4">
+    <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl border border-gray-200 bg-white p-8 shadow-2xl">
+      <div className="flex items-start justify-between gap-4 mb-8">
         <div>
-          <h2 className="text-xl font-semibold text-neutral-900">
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
             {isEdit ? "编辑模型" : "新增模型"}
           </h2>
-          <p className="mt-1 text-xs text-neutral-500">
-            选择提示词模板并配置连接信息，启用后系统会按周期自动请求模型。
+          <p className="mt-2 text-sm text-gray-500">
+            配置模型连接参数与交易策略
           </p>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-sm font-medium text-neutral-600 transition hover:bg-neutral-100"
+          className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
         >
-          取消
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
         </button>
       </div>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-5">
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>显示名称</span>
-          <input
-            required
-            value={formState.display_name}
-            onChange={(event) => onChange({ ...formState, display_name: event.target.value })}
-            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            placeholder="DeepSeek 策略模型"
-          />
-        </label>
+      <form onSubmit={onSubmit} className="space-y-6">
+        <div className="space-y-4">
+            <label className="block">
+                <span className="text-sm font-medium text-gray-700 mb-1.5 block">显示名称</span>
+                <input
+                    required
+                    value={formState.display_name}
+                    onChange={(event) => onChange({ ...formState, display_name: event.target.value })}
+                    className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                    placeholder="例如：DeepSeek 趋势策略"
+                />
+            </label>
 
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>模型 Provider</span>
-          <div className="relative">
-            <select
-              value={providerValue}
-              onChange={(event) => handleProviderSelect(event.target.value)}
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            >
-              {PROVIDER_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
-              <ModelAvatar icon={providerIconValue} size="sm" />
-            </span>
-          </div>
-          <p className="text-[11px] text-neutral-400">
-            选择 Provider 会自动填入默认 BaseURL 并设置图标，可在下方预览。
-          </p>
-        </label>
-
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>API Base URL</span>
-          <input
-            value={formState.api_base_url}
-            onChange={(event) => handleBaseUrlChange(event.target.value)}
-            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            placeholder={PROVIDER_DEFAULT_BASE_URL[providerValue] || "https://..."}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>API Key</span>
-          <input
-            type="password"
-            value={formState.api_key}
-            onChange={(event) => handleApiKeyChange(event.target.value)}
-            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            placeholder="sk-..."
-          />
-          <p className="text-[11px] text-neutral-400">保存后不会再次显示，更新时需重新输入。</p>
-        </label>
-
-        <div className="rounded-2xl border border-neutral-200 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold text-neutral-600">保证金模式（逐仓 / 全仓）</p>
-              <p className="text-[11px] text-neutral-400">
-                每个模型账号可按交易对独立配置。默认使用全仓，可根据策略需求改为逐仓。
-              </p>
+            <div className="grid grid-cols-2 gap-4">
+                <label className="block">
+                    <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型提供商</span>
+                    <div className="relative">
+                        <select
+                        value={providerValue}
+                        onChange={(event) => handleProviderSelect(event.target.value)}
+                        className="w-full appearance-none rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                        >
+                        {PROVIDER_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                            {option.label}
+                            </option>
+                        ))}
+                        </select>
+                        <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+                            <ModelAvatar icon={providerIconValue} size="sm" />
+                        </div>
+                    </div>
+                </label>
+                <label className="block">
+                    <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Key</span>
+                    <input
+                        type="password"
+                        value={formState.api_key}
+                        onChange={(event) => handleApiKeyChange(event.target.value)}
+                        className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                        placeholder="sk-..."
+                    />
+                </label>
             </div>
+
+            <label className="block">
+                <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Base URL</span>
+                <input
+                    value={formState.api_base_url}
+                    onChange={(event) => handleBaseUrlChange(event.target.value)}
+                    className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
+                    placeholder={PROVIDER_DEFAULT_BASE_URL[providerValue] || "https://..."}
+                />
+            </label>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 p-5 bg-gray-50/50">
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold text-gray-900">保证金模式</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              配置各交易对的保证金模式（全仓/逐仓）
+            </p>
           </div>
-          <div className="mt-3 overflow-hidden rounded-xl border border-neutral-100">
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <table className="w-full text-sm">
-              <thead className="bg-neutral-50 text-left text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+              <thead className="bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                 <tr>
-                  <th className="px-4 py-2">Symbol</th>
-                  <th className="px-4 py-2">Mode</th>
+                  <th className="px-4 py-2.5">交易对</th>
+                  <th className="px-4 py-2.5">模式</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-100">
                 {(symbols.length ? symbols : DEFAULT_MARGIN_SYMBOLS).map((symbol) => {
                   const value = formState.margin_config?.[symbol] ?? "cross";
                   return (
-                    <tr key={symbol} className="border-t border-neutral-100 text-sm text-neutral-700">
-                      <td className="px-4 py-2 font-medium">{symbol}</td>
-                      <td className="px-4 py-2">
+                    <tr key={symbol} className="text-sm text-gray-700 hover:bg-gray-50/50">
+                      <td className="px-4 py-2.5 font-medium font-mono text-xs">{symbol}</td>
+                      <td className="px-4 py-2.5">
                         <select
-                          className="w-36 rounded-lg border border-neutral-300 px-3 py-1.5 text-sm"
+                          className="w-full rounded-lg border-gray-200 bg-gray-50 py-1.5 text-xs focus:border-blue-500 focus:ring-blue-500"
                           value={value}
                           onChange={(event) => handleMarginModeChange(symbol, event.target.value)}
                         >
-                          <option value="cross">Cross 全仓</option>
-                          <option value="isolated">Isolated 逐仓</option>
+                          <option value="cross">全仓 (Cross)</option>
+                          <option value="isolated">逐仓 (Isolated)</option>
                         </select>
                       </td>
                     </tr>
@@ -1082,66 +948,75 @@ function FormModal({
           </div>
         </div>
 
-        <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-          <span>提示词模板</span>
-          <select
-            value={formState.prompt_template_id || ""}
-            onChange={handleTemplateChange}
-            disabled={!templateOptions.length}
-            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-neutral-100"
-          >
-            {templateOptions.length === 0 ? (
-              <option value="">暂未配置模板</option>
-            ) : (
-              templateOptions.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.template_name}
-                  {template.is_default ? "（默认）" : ""}
-                </option>
-              ))
-            )}
-          </select>
-        </label>
+        <div className="space-y-4">
+            <label className="block">
+            <span className="text-sm font-medium text-gray-700 mb-1.5 block">提示词模板</span>
+            <select
+                value={formState.prompt_template_id || ""}
+                onChange={handleTemplateChange}
+                disabled={!templateOptions.length}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors disabled:opacity-50"
+            >
+                {templateOptions.length === 0 ? (
+                <option value="">暂未配置模板</option>
+                ) : (
+                templateOptions.map((template) => (
+                    <option key={template.id} value={template.id}>
+                    {template.template_name}
+                    {template.is_default ? "（默认）" : ""}
+                    </option>
+                ))
+                )}
+            </select>
+            </label>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
-            <div className="flex flex-col">
-              <span className="font-semibold text-neutral-800">是否需要人工审核</span>
-              <span className="text-xs text-neutral-500">开启后需要人工批准才能执行交易</span>
+            <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 cursor-pointer hover:border-gray-300 transition-colors">
+                    <div className="flex flex-col">
+                    <span className="text-sm font-medium text-gray-900">人工审核</span>
+                    <span className="text-xs text-gray-500">交易需人工批准</span>
+                    </div>
+                    <input
+                    type="checkbox"
+                    checked={formState.human_review_required}
+                    onChange={(event) => onChange({ ...formState, human_review_required: event.target.checked })}
+                    className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                </label>
+
+                <label className="block">
+                    <span className="text-sm font-medium text-gray-700 mb-1.5 block">自动执行周期 (分钟)</span>
+                    <input
+                    type="number"
+                    min={1}
+                    value={formState.auto_run_interval_minutes}
+                    onChange={(event) =>
+                        onChange({
+                        ...formState,
+                        auto_run_interval_minutes: Number(event.target.value || 1),
+                        })
+                    }
+                    className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                    />
+                </label>
             </div>
-            <input
-              type="checkbox"
-              checked={formState.human_review_required}
-              onChange={(event) => onChange({ ...formState, human_review_required: event.target.checked })}
-              className="h-4 w-4 rounded border-neutral-400 text-emerald-500 focus:ring-emerald-400"
-            />
-          </label>
-
-          <label className="flex flex-col gap-1 text-xs font-medium text-neutral-500">
-            <span>自动执行周期（分钟）</span>
-            <input
-              type="number"
-              min={1}
-              value={formState.auto_run_interval_minutes}
-              onChange={(event) =>
-                onChange({
-                  ...formState,
-                  auto_run_interval_minutes: Number(event.target.value || 1),
-                })
-              }
-              className="w-32 rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            />
-          </label>
         </div>
 
-        <div className="flex items-center justify-end gap-3 pt-2">
-          <button
-            type="submit"
-            disabled={saving}
-            className="rounded-full bg-neutral-900 px-6 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:bg-neutral-400"
-          >
-            {saving ? "保存中..." : "保存"}
-          </button>
+        <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
+            <button
+                type="button"
+                onClick={onClose}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+                取消
+            </button>
+            <button
+                type="submit"
+                disabled={saving}
+                className="px-6 py-2.5 rounded-xl text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                {saving ? "保存中..." : "保存配置"}
+            </button>
         </div>
       </form>
     </div>
@@ -1150,10 +1025,23 @@ function FormModal({
 
 export default function ModelsPage() {
   const { data, error, isLoading, mutate } = useSWR("/api/models?includeSecrets=false", fetcher);
-  const models = useMemo(
-    () => (data?.models ?? []).filter((model) => model.model_id !== "btc_benchmark"),
-    [data]
-  );
+  const models = useMemo(() => {
+    return (data?.models ?? [])
+      .filter((model) => model.model_id !== "btc_benchmark")
+      .map((model) => {
+        const inferredProvider = inferProviderFromBaseUrl(model.api_base_url ?? "");
+        const icon =
+          model.display_icon ||
+          (inferredProvider ? getProviderIconValue(inferredProvider, model.display_icon, model.display_name) : null) ||
+          DEFAULT_MODEL_ICON;
+
+        if (model.display_icon === DEFAULT_MODEL_ICON && inferredProvider && inferredProvider !== "openai") {
+          return { ...model, display_icon: getProviderIconValue(inferredProvider, model.display_icon, model.display_name) };
+        }
+
+        return { ...model, display_icon: icon };
+      });
+  }, [data]);
 
   const {
     data: templateData,
@@ -1220,6 +1108,7 @@ export default function ModelsPage() {
       api_base_url: PROVIDER_DEFAULT_BASE_URL[DEFAULT_PROVIDER],
       provider: DEFAULT_PROVIDER,
       margin_config: normalizeMarginConfig(),
+      display_icon: getProviderIconValue(DEFAULT_PROVIDER, DEFAULT_MODEL_ICON, ""),
       ...hydrateFormFromTemplate(fallbackTemplateId),
     });
     setEditingId(null);
@@ -1258,7 +1147,13 @@ export default function ModelsPage() {
       prompt_template_id: model.prompt_template_id || defaultTemplateId || "",
       system_prompt: model.system_prompt || "",
       user_prompt: model.user_prompt || "",
-      display_icon: model.display_icon || DEFAULT_MODEL_ICON,
+      display_icon:
+        model.display_icon ||
+        getProviderIconValue(
+          inferProviderFromBaseUrl(model.api_base_url ?? ""),
+          DEFAULT_MODEL_ICON,
+          model.display_name
+        ),
       margin_config: normalizeMarginConfig(model.margin_config || {}),
     });
     setEditingId(model.model_id);
@@ -1319,13 +1214,19 @@ export default function ModelsPage() {
       return;
     }
 
+    const resolvedIcon = resolveDisplayIcon(
+      formState.provider ?? DEFAULT_PROVIDER,
+      formState.display_icon,
+      displayName
+    );
+
     const payload = {
       display_name: displayName,
       api_base_url: formState.api_base_url.trim() || null,
       human_review_required: formState.human_review_required,
       auto_run_enabled: formState.auto_run_enabled,
       auto_run_interval_minutes: formState.auto_run_interval_minutes,
-      display_icon: formState.display_icon || DEFAULT_MODEL_ICON,
+      display_icon: resolvedIcon,
       margin_config: normalizeMarginConfig(formState.margin_config || {}),
     };
 
@@ -1370,62 +1271,55 @@ export default function ModelsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
-      {/* 顶部导航栏 - 优化配色和动画 */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* 顶部导航栏 - Apple 风格分段控制器 */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-3">
           <Link
             href="/"
-            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-white hover:text-slate-900"
+            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white/80 backdrop-blur-md px-4 py-2 text-sm font-medium text-gray-600 shadow-sm transition hover:border-gray-300 hover:bg-white hover:text-gray-900 active:scale-95"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7 7-7M3 12h18" />
             </svg>
-            返回主界面
+            返回
           </Link>
-          <div className="inline-flex rounded-full bg-gradient-to-br from-slate-100 to-slate-50 p-1.5 text-sm font-semibold shadow-lg shadow-slate-200/50 ring-1 ring-slate-200/50">
+          
+          {/* 分段控制器 Segmented Control */}
+          <div className="inline-flex rounded-full bg-gray-100/80 p-1 shadow-inner backdrop-blur-sm">
             <button
               type="button"
               onClick={() => setTab("models")}
               className={clsx(
-                "rounded-full px-6 py-2 transition-all duration-300 ease-out",
+                "rounded-full px-5 py-1.5 text-sm font-medium transition-all duration-200 ease-out",
                 tab === "models"
-                  ? "bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/30 scale-105"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+                  ? "bg-white text-gray-900 shadow-[0_1px_2px_rgba(0,0,0,0.1)] ring-1 ring-black/5"
+                  : "text-gray-500 hover:text-gray-700"
               )}
             >
-              <span className="inline-flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                </svg>
-                模型管理
-              </span>
+              模型管理
             </button>
             <button
               type="button"
               onClick={() => setTab("prompts")}
               className={clsx(
-                "rounded-full px-6 py-2 transition-all duration-300 ease-out",
+                "rounded-full px-5 py-1.5 text-sm font-medium transition-all duration-200 ease-out",
                 tab === "prompts"
-                  ? "bg-gradient-to-br from-purple-500 to-pink-600 text-white shadow-lg shadow-purple-500/30 scale-105"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+                  ? "bg-white text-gray-900 shadow-[0_1px_2px_rgba(0,0,0,0.1)] ring-1 ring-black/5"
+                  : "text-gray-500 hover:text-gray-700"
               )}
             >
-              <span className="inline-flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                </svg>
-                提示词管理
-              </span>
+              提示词管理
             </button>
           </div>
         </div>
+
         {tab === "models" ? (
           <button
             type="button"
             onClick={openCreate}
-            className="group inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-emerald-500/40 focus:outline-none focus:ring-4 focus:ring-emerald-200 active:scale-95"
+            className="group inline-flex items-center justify-center gap-2 rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-gray-200 transition-all duration-200 hover:bg-gray-800 hover:shadow-xl hover:-translate-y-0.5 active:scale-95"
           >
-            <svg className="w-5 h-5 transition-transform duration-300 group-hover:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
             新增模型
@@ -1434,9 +1328,9 @@ export default function ModelsPage() {
           <button
             type="button"
             onClick={openCreateTemplate}
-            className="group inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-emerald-500/40 focus:outline-none focus:ring-4 focus:ring-emerald-200 active:scale-95"
+            className="group inline-flex items-center justify-center gap-2 rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-gray-200 transition-all duration-200 hover:bg-gray-800 hover:shadow-xl hover:-translate-y-0.5 active:scale-95"
           >
-            <svg className="w-5 h-5 transition-transform duration-300 group-hover:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
             创建模板
@@ -1511,7 +1405,7 @@ export default function ModelsPage() {
       ) : null}
 
       {modalState.open ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto px-4 py-6">
           <div className="absolute inset-0 bg-neutral-900/40 backdrop-blur-sm" onClick={closeModal} />
           <FormModal
             formState={formState}
@@ -1528,6 +1422,3 @@ export default function ModelsPage() {
     </div>
   );
 }
-
-
-

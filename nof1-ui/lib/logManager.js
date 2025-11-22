@@ -1,17 +1,3 @@
-/**
- * 集中式日志管理器
- * 
- * 功能:
- * 1. 统一服务器端日志接口 (logger.info/warn/error/debug)
- * 2. 内存缓冲最近的日志条目
- * 3. 通过订阅模式支持实时日志流 (SSE)
- * 
- * 使用示例:
- *   import { logger } from './logManager.js';
- *   logger.info('autoRunner', '模型开始执行', { model_id: 'gpt-5' });
- *   logger.error('llmClient', 'API 调用失败', { status: 500 });
- */
-
 const LogLevel = {
   DEBUG: "debug",
   INFO: "info",
@@ -29,16 +15,36 @@ globalThis.__logManagerStore = globalStore;
 const logBuffer = globalStore.logBuffer;
 const subscribers = globalStore.subscribers;
 
-/**
- * 添加日志条目
- */
+function safeSerialize(value) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (err) {
+    try {
+      return String(value);
+    } catch {
+      return null;
+    }
+  }
+}
+
 function addLog(level, module, message, data = null) {
+  const messageIsObject = message && typeof message === "object";
+  const normalizedMessage = messageIsObject ? "[object]" : message;
+  const normalizedData = messageIsObject && data == null
+    ? safeSerialize(message)
+    : safeSerialize(data);
+
   const logEntry = {
     timestamp: new Date().toISOString(),
     level,
     module,
-    message,
-    data,
+    message: normalizedMessage,
+    data: normalizedData,
   };
 
   // 保存到内存缓冲区
@@ -49,7 +55,10 @@ function addLog(level, module, message, data = null) {
 
   // 同时输出到控制台 (开发环境)
   const consoleMethod = level === "error" ? "error" : level === "warn" ? "warn" : "log";
-  console[consoleMethod](`[${level.toUpperCase()}] [${module}] ${message}`, data || "");
+  console[consoleMethod](
+    `[${level.toUpperCase()}] [${module}] ${normalizedMessage}`,
+    normalizedData || ""
+  );
 
   // 通知所有订阅者 (SSE)
   subscribers.forEach((callback) => {
@@ -61,25 +70,14 @@ function addLog(level, module, message, data = null) {
   });
 }
 
-/**
- * 获取最近的日志
- */
 function getRecentLogs(limit = 100) {
   return logBuffer.slice(-limit);
 }
 
-/**
- * 清空日志缓冲区
- */
 function clearLogs() {
   logBuffer.length = 0;
 }
 
-/**
- * 订阅新日志 (用于 SSE)
- * @param {Function} callback - 接收日志条目的回调函数
- * @returns {Function} 取消订阅函数
- */
 function subscribe(callback) {
   subscribers.add(callback);
   return () => {
@@ -87,15 +85,16 @@ function subscribe(callback) {
   };
 }
 
-/**
- * 便捷的日志记录器接口
- */
 const logger = {
   debug: (module, message, data) => addLog(LogLevel.DEBUG, module, message, data),
   info: (module, message, data) => addLog(LogLevel.INFO, module, message, data),
   warn: (module, message, data) => addLog(LogLevel.WARN, module, message, data),
   error: (module, message, data) => addLog(LogLevel.ERROR, module, message, data),
 };
+
+export const logCalcEvent = (module, event, data = {}) =>
+  addLog(LogLevel.INFO, module, `(计算) ${event}`, { event, ...data });
+export const logCalc = (module, event, data) => logCalcEvent(module, event, data);
 
 // 导出所有公共接口
 export { logger };

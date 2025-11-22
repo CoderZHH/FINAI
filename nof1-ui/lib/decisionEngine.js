@@ -292,6 +292,23 @@ export async function runDecisionCycle(modelId, options = {}) {
     null;
   logger.info(`⏱️  请求耗时: ${durationMs}ms\n`);
 
+  // 如果在请求途中被用户暂停，直接丢弃响应，避免在 UI 中“拒收之后返回的 LLM 请求”
+  if (source === "auto_cycle") {
+    const latestModel = await getAgentModelById(modelId);
+    if (!latestModel?.auto_run_enabled) {
+      logger.warn("decisionEngine", "Auto-run paused during cycle; dropping response", {
+        model_id: modelId,
+      });
+      return {
+        prompt: userPrompt,
+        response: llmResult,
+        decisions: {},
+        skipped: true,
+        reason: "auto_run_paused",
+      };
+    }
+  }
+
   // ------------------------------------------------------------------------
   // 步骤 4: 解析和规范化决策数据d
   // ------------------------------------------------------------------------

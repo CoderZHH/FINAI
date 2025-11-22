@@ -3,7 +3,8 @@ import { getRedis } from "./redis.js";
 import { getFeeRate, getFundingConfig } from "./simConfig.js";
 import { runLiquidationCheckForAccount } from "./liquidationEngine.js";
 import { distributeAdlLoss } from "./adlEngine.js";
-import { logger } from "./logManager.js";
+import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
+import { logger, logCalcEvent } from "./logManager.js";
 
 /**
  * Trading pairs tracked by the system. BINANCE_SYMBOLS env var can override the list.
@@ -30,7 +31,8 @@ const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
 function normalizeSymbol(symbol) {
   if (!symbol) return symbol;
-  return String(symbol).toUpperCase().replace(/USDT$/, "");
+  const upper = String(symbol).toUpperCase();
+  return upper.endsWith("USDT") ? upper.slice(0, -4) : upper;
 }
 
 function ensureMarketSymbol(symbol) {
@@ -61,7 +63,7 @@ export function getTrackedSymbols() {
 
 export async function getMarkPrice(symbol) {
   const pool = await getPool();
-  const normalized = normalizeSymbol(symbol);
+  const normalized = ensureMarketSymbol(symbol);
   const { rows } = await pool.query(
     `
     SELECT mark_price, price
@@ -133,8 +135,16 @@ export function summarizeMarginAccount(walletBalanceInput, positions = []) {
       const leverageRaw = Number(pos.leverage ?? 1);
       const leverage = Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
       const rawNotional =
-        pos.notional_usd != null ? Math.abs(toNumber(pos.notional_usd)) : Math.abs(entryPrice * quantity);
-      const margin = leverage > 0 ? rawNotional / leverage : rawNotional;
+        pos.notional_usd != null
+          ? Math.abs(toNumber(pos.notional_usd))
+          : Math.abs(entryPrice * quantity);
+      const imr = Number.isFinite(pos.imr) ? Number(pos.imr) : null;
+      const margin =
+        imr != null
+          ? rawNotional * imr
+          : leverage > 0
+            ? rawNotional / leverage
+            : rawNotional;
       const unrealized = toNumber(pos.unrealized_pnl ?? 0);
       const symbolKey = String(pos.symbol ?? "").toUpperCase();
       acc.totalUnrealized += unrealized;
@@ -157,7 +167,7 @@ export function summarizeMarginAccount(walletBalanceInput, positions = []) {
     equity,
     availableBalance,
   };
-  logger.info("risk.summarizeMarginAccount", {
+  logCalcEvent("risk", "summarizeMarginAccount", {
     wallet_balance_input: walletBalance,
     total_unrealized: totals.totalUnrealized,
     total_initial_margin: totals.totalInitialMargin,
@@ -426,6 +436,13 @@ function mapAccountRow(row) {
   const pnlPct = startingEquity
     ? Number(((latestEquity / startingEquity) - 1).toFixed(4))
     : 0;
+  const walletBalance = toNumber(
+    row.wallet_balance ?? row.available_cash ?? latestEquity
+  );
+  const positionMargin = toNumber(row.position_margin ?? 0);
+  const availableCash = toNumber(
+    row.available_cash ?? walletBalance - positionMargin
+  );
 
   return {
     model_id: row.model_id,
@@ -439,7 +456,9 @@ function mapAccountRow(row) {
     win_rate: toNumber(row.win_rate ?? 0),
     total_trades: Number(row.trade_count ?? 0),
     baseline: Boolean(row.is_baseline ?? false),
-    available_cash: toNumber(row.available_cash ?? latestEquity),
+    wallet_balance: walletBalance,
+    position_margin: positionMargin,
+    available_cash: availableCash,
     starting_equity: startingEquity,
     total_unrealized_pnl: toNumber(row.total_unrealized_pnl ?? 0),
     human_review_required: Boolean(row.human_review_required ?? false),
@@ -916,6 +935,8 @@ export async function createAgentModel(payload) {
     starting_equity: startingEquity,
     latest_equity: startingEquity,
     available_cash: startingEquity,
+    wallet_balance: startingEquity,
+    position_margin: 0,
     total_unrealized_pnl: 0,
   });
 
@@ -1058,6 +1079,8 @@ export async function getAgentAccounts() {
       COALESCE(a.starting_equity, 10000) AS starting_equity,
       COALESCE(a.latest_equity, 10000) AS latest_equity,
       COALESCE(a.available_cash, COALESCE(a.latest_equity, 10000)) AS available_cash,
+      COALESCE(a.wallet_balance, COALESCE(a.available_cash, a.latest_equity, 10000)) AS wallet_balance,
+      COALESCE(a.position_margin, 0) AS position_margin,
       COALESCE(a.total_unrealized_pnl, 0) AS total_unrealized_pnl,
       COALESCE(a.sharpe_ratio, 0) AS sharpe_ratio,
       COALESCE(a.win_rate, 0) AS win_rate,
@@ -1440,6 +1463,7 @@ export async function getPositionsSnapshot() {
   return accounts.map((account) => {
     const positions = positionsByModel.get(account.model_id) ?? [];
     const walletBalance =
+      account.wallet_balance ??
       account.available_cash ??
       account.latest_equity ??
       account.starting_equity ??
@@ -1451,6 +1475,9 @@ export async function getPositionsSnapshot() {
       timestamp: Date.now(),
       dollar_equity: summary.equity,
       total_unrealized_pnl: summary.totalUnrealized,
+      wallet_balance: walletBalance,
+      position_margin: summary.totalInitialMargin,
+      starting_equity: account.starting_equity ?? 10000,
       cum_pnl_pct: account.pnl_pct,
       sharpe_ratio: account.sharpe_ratio,
       available_cash: summary.availableBalance,
@@ -1485,13 +1512,17 @@ export async function markToMarketAllModels() {
 
   for (const account of tradable) {
     let modelPositions = positionsByModel.get(account.model_id) ?? [];
-    let walletBalance = toNumber(
-      account.available_cash ??
-        account.latest_equity ??
-        account.starting_equity ??
-        10000
+    let walletBalance = Math.max(
+      0,
+      toNumber(
+        account.wallet_balance ??
+          account.available_cash ??
+          account.latest_equity ??
+          account.starting_equity ??
+          10000
+      )
     );
-    logger.info("mtm.account.start", {
+    logCalcEvent("mtm.account", "start", {
       model_id: account.model_id,
       starting_equity: account.starting_equity,
       latest_equity_before: account.latest_equity,
@@ -1509,7 +1540,10 @@ export async function markToMarketAllModels() {
       modelPositions = await getOpenPositions(account.model_id);
     }
     if (feesPaid) {
-      walletBalance = Math.max(0, walletBalance - feesPaid);
+      logCalcEvent("mtm.account", "fees", {
+        model_id: account.model_id,
+        fees_paid: feesPaid,
+      });
     }
     let metadata = account.metadata ?? {};
     if (fundingConfig.enabled) {
@@ -1529,7 +1563,7 @@ export async function markToMarketAllModels() {
     let positionMargin = summary.totalInitialMargin;
     let marginBySymbol = { ...(summary.marginBySymbol ?? {}) };
     const startingEquity = toNumber(account.starting_equity ?? walletBalance);
-    logger.info("mtm.account.afterRisk", {
+    logCalcEvent("mtm.account", "afterRisk", {
       model_id: account.model_id,
       wallet_balance_after_exits_and_funding: walletBalance,
       metadata_after_funding: metadata,
@@ -1549,7 +1583,7 @@ export async function markToMarketAllModels() {
         modelPositions,
         { getMarkPrice }
       );
-      logger.info("mtm.liquidation.check", {
+      logCalcEvent("mtm.liquidation", "check", {
         model_id: account.model_id,
         action: liquidationCheck?.action,
         requiredLoss: liquidationCheck?.details?.requiredLoss,
@@ -1558,7 +1592,7 @@ export async function markToMarketAllModels() {
         adlLoss: liquidationCheck?.details?.adlLoss,
       });
       if (liquidationCheck?.action && liquidationCheck.action !== "hold") {
-        logger.info("mtm.liquidation.triggered", {
+        logCalcEvent("mtm.liquidation", "triggered", {
           model_id: account.model_id,
           action: liquidationCheck.action,
           details: liquidationCheck.details,
@@ -1587,9 +1621,6 @@ export async function markToMarketAllModels() {
           );
           if (result.closed > 0) {
             walletBalance += result.realizedPnl ?? 0;
-            if (result.feesPaid) {
-              walletBalance = Math.max(0, walletBalance - result.feesPaid);
-            }
             const released = result.releasedMargin ?? 0;
             if ((details.mode ?? "").toLowerCase() === "isolated") {
               const key = String(symbol).toUpperCase();
@@ -1611,7 +1642,7 @@ export async function markToMarketAllModels() {
         if (adlLoss > 0) {
           try {
             const adlResult = await distributeAdlLoss(adlLoss);
-            logger.info("adlEngine", "ADL distributed", adlResult);
+            logCalcEvent("adlEngine", "adl.distributed", adlResult);
           } catch (adlError) {
             logger.error("adlEngine", "ADL distribution failed", {
               model_id: account.model_id,
@@ -1662,7 +1693,7 @@ export async function markToMarketAllModels() {
       sharpe: account.sharpe_ratio,
       win_rate: account.win_rate,
     });
-    logger.info("mtm.account.end", {
+    logCalcEvent("mtm.account", "end", {
       model_id: account.model_id,
       latest_equity_after: latestEquity,
       wallet_balance_after: walletBalance,
@@ -1993,6 +2024,8 @@ export async function getRuntimeAccount(modelId) {
       starting_equity,
       latest_equity,
       available_cash,
+      wallet_balance,
+      position_margin,
       total_unrealized_pnl,
       sharpe_ratio,
       win_rate,
@@ -2011,6 +2044,8 @@ export async function getRuntimeAccount(modelId) {
     starting_equity: toNumber(row.starting_equity ?? 10000),
     latest_equity: toNumber(row.latest_equity ?? 10000),
     available_cash: toNumber(row.available_cash ?? 0),
+    wallet_balance: toNumber(row.wallet_balance ?? row.available_cash ?? row.latest_equity ?? 0),
+    position_margin: toNumber(row.position_margin ?? 0),
     total_unrealized_pnl: toNumber(row.total_unrealized_pnl ?? 0),
     sharpe_ratio: toNumber(row.sharpe_ratio ?? 0),
     win_rate: toNumber(row.win_rate ?? 0),
@@ -2023,8 +2058,16 @@ export async function getRuntimeAccount(modelId) {
 export async function upsertRuntimeAccount(modelId, payload) {
   const pool = getPool();
   const startingEquity = toNumber(payload.starting_equity ?? 10000);
-  const latestEquity = toNumber(payload.latest_equity ?? startingEquity);
-  const availableCash = toNumber(payload.available_cash ?? latestEquity);
+  const walletBalance = toNumber(
+    payload.wallet_balance ?? payload.available_cash ?? payload.latest_equity ?? startingEquity
+  );
+  const positionMargin = toNumber(payload.position_margin ?? 0);
+  const availableCash = toNumber(
+    payload.available_cash ?? walletBalance - positionMargin
+  );
+  const latestEquity = toNumber(
+    payload.latest_equity ?? walletBalance + (payload.total_unrealized_pnl ?? 0)
+  );
   const totalUnrealized = toNumber(payload.total_unrealized_pnl ?? 0);
   const sharpe = toNumber(payload.sharpe_ratio ?? 0);
   const winRate = toNumber(payload.win_rate ?? 0);
@@ -2045,16 +2088,20 @@ export async function upsertRuntimeAccount(modelId, payload) {
       starting_equity,
       latest_equity,
       available_cash,
+      wallet_balance,
+      position_margin,
       total_unrealized_pnl,
       sharpe_ratio,
       win_rate,
       trade_count,
       metadata,
       updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
     ON CONFLICT (model_id) DO UPDATE SET
       latest_equity = EXCLUDED.latest_equity,
       available_cash = EXCLUDED.available_cash,
+      wallet_balance = EXCLUDED.wallet_balance,
+      position_margin = EXCLUDED.position_margin,
       total_unrealized_pnl = EXCLUDED.total_unrealized_pnl,
       sharpe_ratio = EXCLUDED.sharpe_ratio,
       win_rate = EXCLUDED.win_rate,
@@ -2067,6 +2114,8 @@ export async function upsertRuntimeAccount(modelId, payload) {
       startingEquity,
       latestEquity,
       availableCash,
+      walletBalance,
+      positionMargin,
       totalUnrealized,
       sharpe,
       winRate,
@@ -2095,30 +2144,49 @@ export async function appendAccountTimeseries(entry) {
     throw new Error("appendAccountTimeseries requires modelId.");
   }
 
-  await pool.query(
-    `
-    INSERT INTO agent_account_timeseries (
-      model_id,
-      ts,
-      equity,
-      cash_available,
-      unrealized_pnl,
-      realized_pnl,
-      sharpe,
-      win_rate
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `,
-    [
-      targetModelId,
-      new Date(ts),
-      toNumber(equity ?? 0),
-      cash_available != null ? toNumber(cash_available) : null,
-      unrealized_pnl != null ? toNumber(unrealized_pnl) : null,
-      realized_pnl != null ? toNumber(realized_pnl) : null,
-      sharpe != null ? toNumber(sharpe) : null,
-      win_rate != null ? toNumber(win_rate) : null,
-    ]
-  );
+  const payload = {
+    model_id: targetModelId,
+    ts: ts instanceof Date ? ts : new Date(ts),
+    equity: toNumber(equity ?? 0),
+    cash_available: cash_available != null ? toNumber(cash_available) : null,
+    unrealized_pnl: unrealized_pnl != null ? toNumber(unrealized_pnl) : null,
+    realized_pnl: realized_pnl != null ? toNumber(realized_pnl) : null,
+    sharpe: sharpe != null ? toNumber(sharpe) : null,
+    win_rate: win_rate != null ? toNumber(win_rate) : null,
+  };
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO agent_account_timeseries (
+        model_id,
+        ts,
+        equity,
+        cash_available,
+        unrealized_pnl,
+        realized_pnl,
+        sharpe,
+        win_rate
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `,
+      [
+        payload.model_id,
+        payload.ts,
+        payload.equity,
+        payload.cash_available,
+        payload.unrealized_pnl,
+        payload.realized_pnl,
+        payload.sharpe,
+        payload.win_rate,
+      ]
+    );
+  } catch (error) {
+    logger.error("timeseries.append", "Failed to insert account timeseries", {
+      payload,
+      error: error?.message,
+    });
+    throw error;
+  }
 }
 
 
@@ -2225,8 +2293,9 @@ export async function insertTrade(trade) {
   );
 }
 
-function mapTradeRowToPosition(row, markPrice) {
+async function mapTradeRowToPosition(row, markPrice) {
   const symbol = normalizeSymbol(row.symbol);
+  const riskSymbol = ensureMarketSymbol(row.symbol);
   const entryPrice = toNumber(row.entry_price ?? 0);
   const currentPrice = markPrice != null ? toNumber(markPrice) : entryPrice;
   const quantity = toNumber(row.quantity ?? 0);
@@ -2234,12 +2303,21 @@ function mapTradeRowToPosition(row, markPrice) {
   const side = String(row.side ?? "LONG").toUpperCase();
   const notionalUsd =
     row.notional_usd != null ? toNumber(row.notional_usd) : entryPrice * quantity;
+  const imr = await getIMR(riskSymbol, notionalUsd);
+  const mmr = await getMMR(riskSymbol, notionalUsd);
+  const effectiveLeverage =
+    Math.min(
+      leverage > 0 ? leverage : 1,
+      (await getMaxLeverage(riskSymbol, notionalUsd)) || leverage || 1
+    );
   const multiplier = side === "SHORT" ? -1 : 1;
-  const unrealizedPnl = (currentPrice - entryPrice) * quantity * multiplier * leverage;
+  const unrealizedPnl = (currentPrice - entryPrice) * quantity * multiplier;
+  const initialMargin =
+    imr != null ? Math.abs(notionalUsd) * imr : Math.abs(notionalUsd) / Math.max(1, effectiveLeverage);
   const entryTime = row.entry_time ? safeTimestamp(row.entry_time) : null;
   const holdingSeconds =
     entryTime != null ? Math.floor((Date.now() - entryTime) / 1000) : null;
-  logger.info("positions.mapTradeRowToPosition", {
+  logCalcEvent("positions", "mapTradeRowToPosition", {
     trade_id: row.id,
     model_id: row.model_id,
     symbol,
@@ -2247,9 +2325,12 @@ function mapTradeRowToPosition(row, markPrice) {
     mark_price: currentPrice,
     quantity,
     side,
-    leverage,
+    leverage: effectiveLeverage,
     notional_usd: notionalUsd,
     unrealized_pnl: unrealizedPnl,
+    imr,
+    mmr,
+    initial_margin: initialMargin,
   });
 
   return {
@@ -2257,12 +2338,15 @@ function mapTradeRowToPosition(row, markPrice) {
     model_id: row.model_id,
     symbol,
     side,
-    leverage,
+    leverage: effectiveLeverage,
     quantity,
     entry_price: entryPrice,
     current_price: currentPrice,
     notional_usd: notionalUsd,
     unrealized_pnl: unrealizedPnl,
+    imr,
+    mmr,
+    initial_margin: initialMargin,
     take_profit: row.take_profit != null ? toNumber(row.take_profit) : null,
     stop_loss: row.stop_loss != null ? toNumber(row.stop_loss) : null,
     exit_plan: row.exit_plan ?? {},
@@ -2301,20 +2385,26 @@ export async function closeOpenTrades(modelId, symbol, exitPrice, options = {}) 
     const qty = toNumber(row.quantity ?? 0);
     const leverage = Number(row.leverage ?? 1);
     const direction = String(row.side ?? "LONG").toUpperCase() === "SHORT" ? -1 : 1;
-    const pnl = (exitPrice - entryPrice) * qty * leverage * direction;
+    const pnl = (exitPrice - entryPrice) * qty * direction;
     const entryNotional =
       row.notional_usd != null
         ? Math.abs(toNumber(row.notional_usd))
         : Math.abs(entryPrice * qty);
     const exitNotional = Math.abs(exitPrice * qty);
     const baseNotional = entryNotional;
-    const margin = leverage > 0 ? baseNotional / leverage : baseNotional;
+    const imr = await getIMR(row.symbol, baseNotional);
+    const margin =
+      imr != null
+        ? baseNotional * imr
+        : leverage > 0
+          ? baseNotional / leverage
+          : baseNotional;
     const holdingMs = row.entry_time
       ? Math.max(0, now.getTime() - row.entry_time.getTime())
       : 0;
-    const entryFee = entryNotional * takerFeeRate;
     const exitFee = exitNotional * takerFeeRate;
-    const netPnl = pnl - entryFee - exitFee;
+    // 入场费在建仓时已扣，这里只扣平仓费，避免双扣
+    const netPnl = pnl - exitFee;
     realized += netPnl;
     releasedMargin += margin;
     totalFees += exitFee;
@@ -2402,9 +2492,7 @@ async function enforceExitTargets(modelId, positions) {
     );
     if (closeResult.closed > 0) {
       realizedDelta += closeResult.realizedPnl ?? 0;
-      if (closeResult.feesPaid) {
-        totalFees += closeResult.feesPaid;
-      }
+      totalFees += closeResult.feesPaid ?? 0;
       triggered.push({
         symbol: position.symbol,
         reason,
@@ -2455,7 +2543,7 @@ async function getOpenPositionsGrouped(modelIds) {
 
   for (const row of rows) {
     const markPrice = await getMarkPrice(row.symbol);
-    const position = mapTradeRowToPosition(row, markPrice);
+    const position = await mapTradeRowToPosition(row, markPrice);
     if (!grouped.has(row.model_id)) {
       grouped.set(row.model_id, []);
     }

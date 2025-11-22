@@ -100,10 +100,14 @@ async function seedRiskLimits(pool) {
   await pool.query(
     `
     INSERT INTO risk_limits (symbol, tier, notional_cap, max_leverage, imr, mmr) VALUES
-      ('BTCUSDT', 1, 50000, 125, 0.008, 0.004),
-      ('BTCUSDT', 2, 250000, 100, 0.010, 0.005),
-      ('ETHUSDT', 1, 20000, 125, 0.010, 0.005),
-      ('ETHUSDT', 2, 100000, 75, 0.012, 0.006)
+      ('BTCUSDT', 1,  50000, 125, 0.0080, 0.0040),
+      ('BTCUSDT', 2, 250000,  75, 0.0200, 0.0100),
+      ('ETHUSDT', 1,  20000, 100, 0.0100, 0.0050),
+      ('ETHUSDT', 2, 100000,  50, 0.0200, 0.0100),
+      ('BNBUSDT', 1,  10000,  50, 0.0200, 0.0100),
+      ('SOLUSDT', 1,   8000,  50, 0.0250, 0.0125),
+      ('XRPUSDT', 1,   5000,  30, 0.0300, 0.0150),
+      ('DOGEUSDT',1,   5000,  20, 0.0500, 0.0250)
     ON CONFLICT (symbol, tier) DO UPDATE
     SET
       notional_cap = EXCLUDED.notional_cap,
@@ -129,10 +133,28 @@ async function seedInsuranceFund(pool) {
   logger.info(LOG_MODULE, "insurance_fund seeded.");
 }
 
+async function seedSimSettings(pool) {
+  const defaultFees = { default: { maker: 0.0002, taker: 0.0004 } };
+  const defaultFunding = { enabled: false, mode: "real", fixed_rate: 0.0001 };
+  await pool.query(
+    `
+    INSERT INTO sim_settings (id, fees, funding, updated_at)
+    VALUES (1, $1, $2, now())
+    ON CONFLICT (id) DO UPDATE
+    SET fees = EXCLUDED.fees,
+        funding = EXCLUDED.funding,
+        updated_at = now()
+    `,
+    [defaultFees, defaultFunding]
+  );
+  logger.info(LOG_MODULE, "sim_settings seeded.");
+}
+
 async function dropExistingTables(pool) {
   const tables = [
     "risk_limits",
     "insurance_fund",
+    "sim_settings",
     "agent_positions_runtime",
     "pending_decisions",
     "agent_logs",
@@ -193,12 +215,12 @@ async function ensureSchema(pool) {
   await pool.query(`
     CREATE TABLE agent_accounts_runtime (
       model_id TEXT PRIMARY KEY REFERENCES agent_models(model_id) ON DELETE CASCADE,
-      starting_equity NUMERIC(18,8) NOT NULL,
-      latest_equity NUMERIC(18,8) NOT NULL,
-      available_cash NUMERIC(18,8) NOT NULL,
-      total_unrealized_pnl NUMERIC(18,8) NOT NULL,
-      wallet_balance NUMERIC(18,8),
-      position_margin NUMERIC(18,8),
+      starting_equity NUMERIC(18,8) NOT NULL DEFAULT 10000,
+      latest_equity NUMERIC(18,8) NOT NULL DEFAULT 10000,
+      available_cash NUMERIC(18,8) NOT NULL DEFAULT 10000,
+      total_unrealized_pnl NUMERIC(18,8) NOT NULL DEFAULT 0,
+      wallet_balance NUMERIC(18,8) NOT NULL DEFAULT 10000,
+      position_margin NUMERIC(18,8) NOT NULL DEFAULT 0,
       realized_pnl_price NUMERIC(18,8) DEFAULT 0,
       realized_pnl_fee NUMERIC(18,8) DEFAULT 0,
       realized_pnl_funding NUMERIC(18,8) DEFAULT 0,
@@ -273,6 +295,15 @@ async function ensureSchema(pool) {
       realized_pnl NUMERIC(18,8),
       sharpe NUMERIC(18,8),
       win_rate NUMERIC(18,8)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE sim_settings (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      fees JSONB NOT NULL,
+      funding JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
 
@@ -376,6 +407,7 @@ async function truncateTables(pool) {
   const tables = [
     "risk_limits",
     "insurance_fund",
+    "sim_settings",
     "market_price_history",
     "agent_account_timeseries",
     "trades",
@@ -410,6 +442,9 @@ async function main() {
 
     logger.info(LOG_MODULE, "Seeding insurance fund...");
     await seedInsuranceFund(pool);
+
+    logger.info(LOG_MODULE, "Seeding sim settings...");
+    await seedSimSettings(pool);
 
     logger.info(LOG_MODULE, "Database is now clean.");
   } finally {

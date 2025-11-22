@@ -1,7 +1,11 @@
 import { getPool } from "./db.js";
 
 function normalizeSymbol(symbol) {
-  return String(symbol ?? "").trim().toUpperCase();
+  const upper = String(symbol ?? "").trim().toUpperCase();
+  if (!upper.endsWith("USDT")) {
+    return `${upper}USDT`;
+  }
+  return upper;
 }
 
 async function fetchTier(symbol, notional) {

@@ -47,14 +47,20 @@ export async function PUT(request, context) {
     if (!currentModel) {
       return Response.json({ error: "Model not found" }, { status: 404 });
     }
-    if (isModelRunning(modelId)) {
-      return Response.json(
-        { error: "模型正在运行，暂时无法修改配置。" },
-        { status: 409 }
-      );
-    }
+    const running = isModelRunning(modelId);
 
     const updates = {};
+    if (running) {
+      const keys = Object.keys(payload ?? {});
+      const onlyToggleAutoRun =
+        keys.length === 1 && keys[0] === "auto_run_enabled";
+      if (!onlyToggleAutoRun) {
+        return Response.json(
+          { error: "模型正在运行，暂时无法修改配置。" },
+          { status: 409 }
+        );
+      }
+    }
 
     if (Object.prototype.hasOwnProperty.call(payload, "display_name")) {
       const displayName =

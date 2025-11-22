@@ -9,7 +9,7 @@ import {
   summarizeMarginAccount,
   upsertRuntimeAccount,
 } from "./dataRepository.js";
-import { logger } from "./logManager.js";
+import { logger, logCalcEvent } from "./logManager.js";
 import { getFeeRate, getMarginModeForModel } from "./simConfig.js";
 import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
 
@@ -47,8 +47,10 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       win_rate: 0,
     };
   const startingEquity = account.starting_equity ?? 10000;
-  let walletBalance =
-    account.wallet_balance ?? account.available_cash ?? startingEquity;
+  let walletBalance = Math.max(
+    0,
+    account.wallet_balance ?? account.available_cash ?? startingEquity
+  );
   let positionMargin = Number(account.position_margin ?? 0);
   const existingPositions = await getOpenPositions(modelId);
   const existingSummary = summarizeMarginAccount(walletBalance, existingPositions);
@@ -57,7 +59,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
   if (!positionMargin) {
     positionMargin = currentInitialMargin;
   }
-  logger.info("decisionExecutor.applyDecisionSet.start", {
+  logCalcEvent("decisionExecutor", "applyDecisionSet.start", {
     model_id: modelId,
     starting_equity: startingEquity,
     wallet_balance_before: walletBalance,
@@ -80,7 +82,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
   let totalNotional = 0;
   let totalFees = 0;
 
-  logger.info("decisionExecutor", "Applying decision set", {
+  logCalcEvent("decisionExecutor", "decisionSet.begin", {
     model_id: modelId,
     symbol_count: symbols.length,
     decision_source: decisionSource,
@@ -97,7 +99,6 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     const leverage = Number(decision.leverage ?? 1);
     const riskBudget = Number(decision.risk_usd ?? price * quantity);
 
-    // 📊 信号名称映射：将各种格式统一为 long/short/hold/close
     const signalMap = {
       'buy': 'long',
       'buy_to_enter': 'long',
@@ -105,15 +106,15 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       'sell': 'short',
       'sell_to_enter': 'short',
       'short': 'short',
-      'hold': 'hold',        // ✅ hold = 保持现有仓位，不做任何操作
-      'flat': 'close',       // ✅ flat = 平仓
-      'close': 'close',      // ✅ close = 平仓
-      'exit': 'close'        // ✅ exit = 平仓
+      'hold': 'hold',
+      'flat': 'close',
+      'close': 'close',
+      'exit': 'close'
     };
     
     const signal = signalMap[rawSignal] || 'hold';
 
-    logger.info("decisionExecutor.decision.before", {
+    logCalcEvent("decisionExecutor", "decision.before", {
       model_id: modelId,
       symbol,
       raw_signal: decision.signal,
@@ -135,13 +136,9 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       const closeResult = await closeOpenTrades(modelId, symbol, price);
       if (closeResult.closed > 0) {
         walletBalance += closeResult.realizedPnl;
-        if (closeResult.feesPaid) {
-          walletBalance = Math.max(0, walletBalance - closeResult.feesPaid);
-          totalFees += closeResult.feesPaid;
-        }
+        totalFees += closeResult.feesPaid ?? 0;
         const symbolKey = String(symbol ?? "").toUpperCase();
         const released = closeResult.releasedMargin ?? 0;
-        walletBalance += released;
         if (marginMode === "isolated") {
           marginBySymbol[symbolKey] = Math.max(
             0,
@@ -152,13 +149,13 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
         }
         currentInitialMargin = Math.max(0, currentInitialMargin - released);
         executed += closeResult.closed;
-        logger.info("decisionExecutor", "Closed open positions", {
+        logCalcEvent("decisionExecutor", "close.completed", {
           model_id: modelId,
           symbol,
           closed_count: closeResult.closed,
           realized_pnl: closeResult.realizedPnl,
         });
-        logger.info("decisionExecutor.decision.closeResult", {
+        logCalcEvent("decisionExecutor", "close.snapshot", {
           model_id: modelId,
           symbol,
           closed: closeResult.closed,
@@ -184,15 +181,18 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       });
       continue;
     }
-    const imr = (await getIMR(symbol, baseNotional)) ?? 0;
-    const mmr = (await getMMR(symbol, baseNotional)) ?? 0;
+    const imr = await getIMR(symbol, baseNotional);
+    const mmr = await getMMR(symbol, baseNotional);
     const maxLev = (await getMaxLeverage(symbol, baseNotional)) ?? requestedLeverage;
     const leverageValue = Math.min(
       requestedLeverage,
       maxLev > 0 ? maxLev : 1
     );
-    const marginRequired = baseNotional / leverageValue;
-    const initialMargin = baseNotional * imr;
+    const initialMargin =
+      imr != null
+        ? baseNotional * imr
+        : baseNotional / Math.max(1, leverageValue);
+    const marginRequired = initialMargin;
     const symbolKey = String(symbol ?? "").toUpperCase();
     const lockedForSymbol =
       marginMode === "isolated"
@@ -217,6 +217,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       quantity,
       entry_price: price,
       exit_price: null,
+      notional_usd: baseNotional,
       entry_time: now,
       exit_time: null,
       holding_time: null,
@@ -233,7 +234,6 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     if (marginMode === "isolated") {
       marginBySymbol[symbolKey] = (marginBySymbol[symbolKey] ?? 0) + initialMargin;
     } else {
-      walletBalance = Math.max(0, walletBalance - initialMargin);
       positionMargin += initialMargin;
     }
 
@@ -243,7 +243,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
       walletBalance = Math.max(0, walletBalance - takerFee);
       totalFees += takerFee;
     }
-    logger.info("decisionExecutor.decision.open", {
+    logCalcEvent("decisionExecutor", "open.snapshot", {
       model_id: modelId,
       symbol,
       side,
@@ -267,7 +267,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
   const availableCash = walletBalance - positionMargin;
   const realizedPnl = walletBalance - startingEquity;
 
-  logger.info("decisionExecutor.applyDecisionSet.beforeUpsert", {
+  logCalcEvent("decisionExecutor", "persist.beforeUpsert", {
     model_id: modelId,
     wallet_balance_before_upsert: walletBalance,
     position_margin_before_upsert: positionMargin,
@@ -292,7 +292,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     wallet_balance: walletBalance,
     position_margin: positionMargin,
   });
-  logger.info("decisionExecutor.applyDecisionSet.afterUpsert", {
+  logCalcEvent("decisionExecutor", "persist.afterUpsert", {
     model_id: modelId,
     db_latest_equity: updatedAccount?.latest_equity,
     db_available_cash: updatedAccount?.available_cash,
@@ -301,7 +301,6 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     db_total_unrealized_pnl: updatedAccount?.total_unrealized_pnl,
   });
 
-  // ✅ 记录到时间序列表（用于图表绘制）
   await appendAccountTimeseries({
     modelId,
     ts: now,
@@ -313,7 +312,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     win_rate: account.win_rate ?? 0,
   });
 
-  logger.info("decisionExecutor", "Decision set applied", {
+  logCalcEvent("decisionExecutor", "decisionSet.done", {
     model_id: modelId,
     executed_trades: executed,
     total_risk_usd: Number(totalRisk.toFixed(2)),

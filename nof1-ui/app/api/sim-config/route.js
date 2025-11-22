@@ -1,26 +1,32 @@
 "use server";
 
 import { loadSimConfig, saveSimConfig } from "../../../lib/simConfig.js";
-import { hasOpenPositionsForSymbol } from "../../../lib/dataRepository.js";
+import { listRiskLimits, upsertRiskLimits } from "../../../lib/simSettingsService.js";
 
-export async function GET() {
-  const config = loadSimConfig();
-  return Response.json(config);
+function normalizeRiskLimits(raw = []) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((row) => {
+      const symbol = String(row.symbol ?? "").trim().toUpperCase();
+      const tier = Number(row.tier ?? 0);
+      const notional_cap = Number(row.notional_cap ?? 0);
+      const max_leverage = Number(row.max_leverage ?? 0);
+      const imr = Number(row.imr ?? 0);
+      const mmr = Number(row.mmr ?? 0);
+      if (!symbol || tier <= 0 || !Number.isFinite(tier)) return null;
+      if (!Number.isFinite(notional_cap) || notional_cap <= 0) return null;
+      if (!Number.isFinite(max_leverage) || max_leverage <= 0) return null;
+      if (!Number.isFinite(imr) || imr <= 0) return null;
+      if (!Number.isFinite(mmr) || mmr <= 0) return null;
+      return { symbol, tier, notional_cap, max_leverage, imr, mmr };
+    })
+    .filter(Boolean);
 }
 
-function normalizeMarginSymbols(payloadSymbols = {}) {
-  const result = {};
-  const validModes = new Set(["isolated", "cross"]);
-  Object.entries(payloadSymbols).forEach(([key, value]) => {
-    if (!value || typeof value !== "object") return;
-    const upperKey = key.toUpperCase();
-    const mode = typeof value.margin_mode === "string" ? value.margin_mode : "cross";
-    if (!validModes.has(mode)) {
-      throw new Error(`Invalid margin_mode "${mode}" for symbol ${key}`);
-    }
-    result[upperKey] = { margin_mode: mode };
-  });
-  return result;
+export async function GET() {
+  const config = await loadSimConfig();
+  const risk_limits = await listRiskLimits();
+  return Response.json({ ...config, risk_limits });
 }
 
 function normalizeFeeSection(rawFees = {}) {
@@ -71,23 +77,17 @@ function normalizeFunding(rawFunding = {}) {
 export async function PUT(request) {
   try {
     const payload = await request.json();
-    const current = loadSimConfig();
-    const symbols = normalizeMarginSymbols(payload.symbols ?? current.symbols);
+    const current = await loadSimConfig();
     const fees = normalizeFeeSection(payload.fees ?? current.fees);
     const funding = normalizeFunding(payload.funding ?? current.funding);
 
-    const currentSymbols = normalizeMarginSymbols(current.symbols ?? {});
-    for (const [symbol, cfg] of Object.entries(symbols)) {
-      const prevMode = currentSymbols[symbol]?.margin_mode ?? "cross";
-      if (prevMode === cfg.margin_mode) continue;
-      const hasExposure = await hasOpenPositionsForSymbol(symbol);
-      if (hasExposure) {
-        throw new Error(`Symbol ${symbol} 有未平仓或挂单，禁止切换保证金模式。`);
-      }
+    const riskLimitsPayload = normalizeRiskLimits(payload.risk_limits);
+    const merged = await saveSimConfig({ fees, funding });
+    if (riskLimitsPayload.length) {
+      await upsertRiskLimits(riskLimitsPayload);
     }
-
-    const merged = saveSimConfig({ symbols, fees, funding });
-    return Response.json(merged);
+    const risk_limits = await listRiskLimits();
+    return Response.json({ ...merged, risk_limits });
   } catch (error) {
     console.error("[api/sim-config] update failed", error);
     return Response.json(

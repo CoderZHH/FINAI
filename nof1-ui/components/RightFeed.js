@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import CoinBadge from "./CoinBadge";
-import { resolveModelIcon } from "../lib/modelIcons";
+import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/modelIcons";
 
 const fetcher = (url) => fetch(url).then((response) => response.json());
 
@@ -114,6 +114,57 @@ const MODEL_COLORS = [
   "bg-sky-100 text-sky-700",
   "bg-purple-100 text-purple-700",
 ];
+
+const PROVIDER_DEFAULT_BASE_URL = {
+  openai: "https://api.openai.com/v1",
+  deepseek: "https://api.deepseek.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  qwen: "https://dashscope.aliyuncs.com",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  moonshot: "https://api.moonshot.ai/v1",
+  xai_grok: "https://api.x.ai/v1",
+  doubao: "https://ark.cn-beijing.volces.com/api/v3",
+  minimax: "https://api.minimax.io/v1",
+  wenxin: "https://api.baidu.com/ernie-bot/v1",
+  custom: "",
+};
+
+const PROVIDER_ICON_MAP = {
+  openai: "icon:gpt",
+  deepseek: "icon:deepseek",
+  anthropic: "icon:claude",
+  gemini: "icon:gemini",
+  qwen: "icon:qwen",
+  zhipu: "icon:zhipu",
+  moonshot: "icon:kimi",
+  xai_grok: "icon:grok",
+  doubao: "icon:doubao",
+  minimax: "icon:minimax",
+  wenxin: "icon:wenxin",
+  custom: DEFAULT_MODEL_ICON,
+};
+
+function inferProviderFromBaseUrl(baseUrl = "") {
+  const normalized = baseUrl.trim().toLowerCase();
+  if (!normalized) return "custom";
+  const match = Object.entries(PROVIDER_DEFAULT_BASE_URL).find(
+    ([, url]) => url && url.trim().toLowerCase() === normalized
+  );
+  return (match?.[0] ?? "custom");
+}
+
+function resolveIconForModel(model) {
+  const rawIcon = normaliseIconValue(model?.display_icon ?? model?.icon ?? "");
+  const provider = inferProviderFromBaseUrl(model?.api_base_url ?? "");
+  const providerIcon = PROVIDER_ICON_MAP[provider] || DEFAULT_MODEL_ICON;
+
+  if (!rawIcon) return providerIcon;
+  if (rawIcon === DEFAULT_MODEL_ICON && provider && provider !== "openai") {
+    return providerIcon;
+  }
+  return rawIcon;
+}
 
 function ModelBadge({ modelId, icon }) {
   const info = icon ? resolveModelIcon(icon) : null;
@@ -451,7 +502,7 @@ function ModelChatPanel({ iconMap = {} }) {
 }
 
 /** ---------- 持仓概览面板 ---------- */
-function PositionsPanel() {
+function PositionsPanel({ iconMap }) {
   const { data } = useSWR("/api/positions/current", fetcher, { refreshInterval: 8000 });
   const totals = (data?.accountTotals ?? []).filter(
     (account) => account.model_id !== BASELINE_MODEL_ID
@@ -471,9 +522,15 @@ function PositionsPanel() {
             className="rounded-3xl border border-neutral-200 bg-gradient-to-br from-white to-slate-50 px-3 py-3 shadow-sm"
           >
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-[11px] text-neutral-500">模型</div>
-                <div className="text-sm font-semibold text-neutral-900">{humanizeModel(account.model_id)}</div>
+              <div className="flex items-center gap-2">
+                <ModelBadge
+                  modelId={account.model_id}
+                  icon={iconMap?.[account.model_id]}
+                />
+                <div>
+                  <div className="text-[11px] text-neutral-500">模型</div>
+                  <div className="text-sm font-semibold text-neutral-900">{humanizeModel(account.model_id)}</div>
+                </div>
               </div>
               <div className="text-right">
                 <div className="text-[11px] text-neutral-500">账户净值</div>
@@ -482,6 +539,9 @@ function PositionsPanel() {
                 </div>
                 <div className="text-[10px] text-neutral-500">
                   未实现盈亏 {formatCurrency(account.total_unrealized_pnl)}
+                </div>
+                <div className="text-[10px] text-neutral-500">
+                  累计盈亏 {formatCurrency((account.wallet_balance ?? 0) - (account.starting_equity ?? 0))}
                 </div>
               </div>
             </div>
@@ -542,7 +602,7 @@ export default function RightFeed() {
   const iconMap = useMemo(() => {
     const map = {};
     (modelsData?.models ?? []).forEach((model) => {
-      map[model.model_id] = model.display_icon;
+      map[model.model_id] = resolveIconForModel(model);
     });
     return map;
   }, [modelsData]);
@@ -565,7 +625,7 @@ export default function RightFeed() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-4">
-        {activeTab === "positions" && <PositionsPanel />}
+        {activeTab === "positions" && <PositionsPanel iconMap={iconMap} />}
         {activeTab === "completed" && <CompletedPanel />}
         {activeTab === "decision" && <DecisionPanel />}
         {activeTab === "modelchat" && <ModelChatPanel iconMap={iconMap} />}
