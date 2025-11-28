@@ -1,20 +1,49 @@
 import { getPool } from "./db.js";
 
-const DEFAULT_CONFIG = {
-  fees: {
-    default: { maker: 0.0002, taker: 0.0004 },
-  },
-  funding: {
-    enabled: false,
-    mode: "real", // or "fixed"
-    fixed_rate: 0.0001,
-  },
-  risk_limits: [],
-};
+const DEFAULT_FEES = { default: { maker: 0.001, taker: 0.001 } };
 
-let cachedConfig = { ...DEFAULT_CONFIG };
+let cachedFees = { ...DEFAULT_FEES };
 let initialized = false;
-const initPromise = initializeConfig();
+const initPromise = initialize();
+
+async function initialize() {
+  try {
+    const pool = getPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sim_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        fees JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    const { rows } = await pool.query(
+      `
+      SELECT fees
+      FROM sim_settings
+      WHERE id = 1
+      `
+    );
+    if (rows.length) {
+      cachedFees = normalizeFees(rows[0].fees);
+    } else {
+      await pool.query(
+        `
+        INSERT INTO sim_settings (id, fees, updated_at)
+        VALUES (1, $1, now())
+        ON CONFLICT (id) DO UPDATE SET fees = EXCLUDED.fees, updated_at = now()
+        `,
+        [DEFAULT_FEES]
+      );
+      cachedFees = { ...DEFAULT_FEES };
+    }
+  } catch (error) {
+    console.error("[simConfig] init failed", error);
+    cachedFees = { ...DEFAULT_FEES };
+  } finally {
+    initialized = true;
+  }
+  return cachedFees;
+}
 
 function normalizeFeeEntry(entry = {}, label = "default") {
   const maker = Number(entry.maker ?? 0);
@@ -30,7 +59,7 @@ function normalizeFeeEntry(entry = {}, label = "default") {
 
 function normalizeFees(rawFees = {}) {
   const normalized = {
-    default: normalizeFeeEntry(rawFees.default ?? DEFAULT_CONFIG.fees.default, "default"),
+    default: normalizeFeeEntry(rawFees.default ?? DEFAULT_FEES.default, "default"),
   };
   Object.entries(rawFees).forEach(([key, value]) => {
     if (key === "default") return;
@@ -39,76 +68,35 @@ function normalizeFees(rawFees = {}) {
   return normalized;
 }
 
-function normalizeFunding(rawFunding = {}) {
-  const enabled = Boolean(rawFunding.enabled);
-  const mode = rawFunding.mode === "fixed" ? "fixed" : "real";
-  const fixedRate = Number(rawFunding.fixed_rate ?? DEFAULT_CONFIG.funding.fixed_rate);
-  if (!Number.isFinite(fixedRate) || fixedRate < 0) {
-    throw new Error("fixed_rate must be a non-negative number.");
-  }
-  return { enabled, mode, fixed_rate: fixedRate };
-}
-
-async function initializeConfig() {
-  try {
-    const pool = getPool();
-    const { rows } = await pool.query(
-      `
-      SELECT fees, funding
-      FROM sim_settings
-      WHERE id = 1
-      `
-    );
-    if (rows.length) {
-      cachedConfig = {
-        fees: normalizeFees(rows[0].fees ?? {}),
-        funding: normalizeFunding(rows[0].funding ?? {}),
-      };
-    } else {
-      cachedConfig = { ...DEFAULT_CONFIG };
-    }
-  } catch (error) {
-    console.warn("[simConfig] initialize from DB failed, using defaults", error?.message);
-    cachedConfig = { ...DEFAULT_CONFIG };
-  } finally {
-    initialized = true;
-  }
-  return cachedConfig;
-}
-
 export async function loadSimConfig() {
   await initPromise;
-  return cachedConfig;
+  return { fees: cachedFees };
 }
 
 export async function saveSimConfig(nextConfig = {}) {
   await initPromise;
-  const fees = normalizeFees(nextConfig.fees ?? cachedConfig.fees ?? DEFAULT_CONFIG.fees);
-  const funding = normalizeFunding(nextConfig.funding ?? cachedConfig.funding ?? DEFAULT_CONFIG.funding);
-  const merged = { fees, funding };
-
+  const fees = normalizeFees(nextConfig.fees ?? cachedFees ?? DEFAULT_FEES);
   try {
     const pool = getPool();
     await pool.query(
       `
-      INSERT INTO sim_settings (id, fees, funding, updated_at)
-      VALUES (1, $1, $2, now())
+      INSERT INTO sim_settings (id, fees, updated_at)
+      VALUES (1, $1, now())
       ON CONFLICT (id) DO UPDATE
-      SET fees = EXCLUDED.fees, funding = EXCLUDED.funding, updated_at = now()
+      SET fees = EXCLUDED.fees, updated_at = now()
       `,
-      [fees, funding]
+      [fees]
     );
-    cachedConfig = merged;
+    cachedFees = fees;
   } catch (error) {
     console.error("[simConfig] save failed", error);
     throw error;
   }
-
-  return merged;
+  return { fees };
 }
 
 export function getFeeRate(symbol, liquidity) {
-  const cfg = cachedConfig?.fees ?? DEFAULT_CONFIG.fees;
+  const cfg = cachedFees ?? DEFAULT_FEES;
   const candidates = [];
   if (symbol) {
     const upper = String(symbol).toUpperCase();
@@ -120,14 +108,10 @@ export function getFeeRate(symbol, liquidity) {
   const entry =
     candidates.map((key) => cfg[key]).find(Boolean) ??
     cfg.default ??
-    DEFAULT_CONFIG.fees.default;
+    DEFAULT_FEES.default;
   if (liquidity === "maker") return Number(entry.maker ?? 0) || 0;
   if (liquidity === "taker") return Number(entry.taker ?? 0) || 0;
   throw new Error(`Invalid liquidity type "${liquidity}", expected maker/taker.`);
-}
-
-export function getFundingConfig() {
-  return cachedConfig?.funding ?? { ...DEFAULT_CONFIG.funding };
 }
 
 export function getMarginModeForModel(modelConfig, symbol) {
@@ -141,6 +125,6 @@ export function getMarginModeForModel(modelConfig, symbol) {
 }
 
 export async function refreshSimConfig() {
-  cachedConfig = await initializeConfig();
-  return cachedConfig;
+  cachedFees = (await initialize()) ?? DEFAULT_FEES;
+  return { fees: cachedFees };
 }

@@ -18,6 +18,10 @@ export async function upsertRiskLimits(entries = []) {
     throw new Error("entries must be an array");
   }
   const pool = getPool();
+  const normalizeSymbol = (symbol = "") => {
+    const upper = String(symbol ?? "").trim().toUpperCase();
+    return upper.endsWith("USDT") ? upper : `${upper}USDT`;
+  };
   for (const entry of entries) {
     const { symbol, tier, notional_cap, max_leverage, imr, mmr } = entry ?? {};
     if (!symbol || !tier) continue;
@@ -32,7 +36,7 @@ export async function upsertRiskLimits(entries = []) {
           mmr = EXCLUDED.mmr
       `,
       [
-        String(symbol).toUpperCase(),
+        normalizeSymbol(symbol),
         Number(tier),
         Number(notional_cap),
         Number(max_leverage),

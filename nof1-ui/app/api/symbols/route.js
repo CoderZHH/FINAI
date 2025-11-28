@@ -1,8 +1,10 @@
 "use server";
 
-import { getTrackedSymbols } from "../../../lib/dataRepository.js";
+import { NextResponse } from "next/server";
+import { loadAllModelAllowedSymbols, getTrackedSymbols } from "../../../lib/dataRepository.js";
 
 export async function GET() {
+  await loadAllModelAllowedSymbols();
   const symbols = getTrackedSymbols();
-  return Response.json({ symbols });
+  return NextResponse.json({ symbols });
 }

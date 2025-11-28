@@ -7,8 +7,7 @@
         "dev": "node scripts/reset-db.js && next dev -p 3000",
         "build": "next build",
         "start": "next start",
-        "lint": "next lint",
-        "seed:static": "node scripts/get_market.js"
+        "lint": "next lint"
     },
     "keywords": [],
     "author": "",

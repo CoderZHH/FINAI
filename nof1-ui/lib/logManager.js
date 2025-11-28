@@ -93,7 +93,7 @@ const logger = {
 };
 
 export const logCalcEvent = (module, event, data = {}) =>
-  addLog(LogLevel.INFO, module, `(计算) ${event}`, { event, ...data });
+  addLog(LogLevel.INFO, module, ` ${event}`, { event, ...data });
 export const logCalc = (module, event, data) => logCalcEvent(module, event, data);
 
 // 导出所有公共接口

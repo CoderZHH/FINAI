@@ -1,44 +1,43 @@
 import { getPool } from "./db.js";
 import { getRedis } from "./redis.js";
-import { getFeeRate, getFundingConfig } from "./simConfig.js";
+import { getFeeRate } from "./simConfig.js";
 import { runLiquidationCheckForAccount } from "./liquidationEngine.js";
 import { distributeAdlLoss } from "./adlEngine.js";
 import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
 import { logger, logCalcEvent } from "./logManager.js";
+import {
+  ensureMarketSymbol,
+  normalizeSymbol,
+  parseSeedSymbols,
+  getDefaultSeedSymbols,
+} from "./symbols.js";
 
-/**
- * Trading pairs tracked by the system. BINANCE_SYMBOLS env var can override the list.
- */
-const DEFAULT_SYMBOLS = (() => {
-  try {
-    return JSON.parse(
-      process.env.BINANCE_SYMBOLS ||
-        '["BTC","ETH","SOL","BNB","DOGE","XRP"]'
-    );
-  } catch (err) {
-    console.warn("BINANCE_SYMBOLS parse failed, using default symbols.", err);
-    return ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Environment variable ${name} is required.`);
   }
-})();
-
-const NORMALIZED_SYMBOLS = DEFAULT_SYMBOLS.map(normalizeSymbol);
+  return value;
+}
 const BASELINE_MODEL_ID = "btc_benchmark";
 const DEFAULT_MODEL_ICON = "icon:gpt";
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 let promptTemplateSchemaEnsured = false;
+let agentModelSchemaEnsured = false;
+const BINANCE_API_BASE = requireEnv("BINANCE_API_BASE");
 
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
-function normalizeSymbol(symbol) {
-  if (!symbol) return symbol;
-  const upper = String(symbol).toUpperCase();
-  return upper.endsWith("USDT") ? upper.slice(0, -4) : upper;
+function normalizeAllowedSymbolsList(symbols) {
+  const cleaned = (symbols ?? [])
+    .map((s) => String(s ?? "").trim().toUpperCase().replace(/USDT$/i, ""))
+    .filter(Boolean);
+  return Array.from(new Set(cleaned));
 }
 
-function ensureMarketSymbol(symbol) {
-  if (!symbol) return symbol;
-  const upper = String(symbol).toUpperCase();
-  return upper.endsWith("USDT") ? upper : `${upper}USDT`;
+export function getTrackedSymbols() {
+  const modelSymbols = globalThis.__cachedModelSymbols ?? [];
+  return Array.from(new Set(modelSymbols.map(normalizeSymbol)));
 }
 
 async function ensurePromptTemplateSchema() {
@@ -57,8 +56,36 @@ async function ensurePromptTemplateSchema() {
   }
 }
 
-export function getTrackedSymbols() {
-  return [...NORMALIZED_SYMBOLS];
+async function ensureAgentModelSchema() {
+  if (agentModelSchemaEnsured) return;
+  const pool = getPool();
+  try {
+    await pool.query(`
+      ALTER TABLE IF EXISTS agent_models
+        ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[]
+    `);
+    agentModelSchemaEnsured = true;
+  } catch (error) {
+    console.error("[dataRepository] ensureAgentModelSchema failed", error);
+    throw error;
+  }
+}
+
+async function loadAllModelAllowedSymbols() {
+  await ensureAgentModelSchema();
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT DISTINCT UNNEST(allowed_symbols) AS symbol
+    FROM agent_models
+    WHERE allowed_symbols IS NOT NULL
+    `
+  );
+  const symbols = rows
+    .map((r) => String(r.symbol ?? "").toUpperCase().replace(/USDT$/i, ""))
+    .filter(Boolean);
+  globalThis.__cachedModelSymbols = symbols;
+  return symbols;
 }
 
 export async function getMarkPrice(symbol) {
@@ -373,6 +400,10 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     api_key: includeSecrets ? apiKey : "",
     display_icon: row.display_icon ?? DEFAULT_MODEL_ICON,
     margin_config: row.margin_config ?? {},
+    allowed_symbols:
+      Array.isArray(row.allowed_symbols) && row.allowed_symbols.length
+        ? row.allowed_symbols.map((s) => String(s ?? "").toUpperCase().replace(/USDT$/i, ""))
+        : ENV_SYMBOLS,
     has_api_key: Boolean(apiKey),
     system_prompt: template?.system_prompt ?? "",
     user_prompt: template?.user_prompt ?? "",
@@ -468,18 +499,32 @@ function mapAccountRow(row) {
 
 export async function getMarketSnapshot() {
   const pool = getPool();
+  await loadAllModelAllowedSymbols();
+  const trackedSymbols = getTrackedSymbols(); // base symbols
+  const marketSymbols = trackedSymbols.map((s) => ensureMarketSymbol(s));
 
-  const redisRows = await fetchRedisTickers(DEFAULT_SYMBOLS);
+  if (!marketSymbols.length) {
+    return {
+      order: [],
+      prices: {},
+      serverTime: Date.now(),
+      mode: "live",
+      replayTimestamp: null,
+    };
+  }
+
+  const redisRows = await fetchRedisTickers(marketSymbols);
   const prices = {};
   const missingSymbols = [];
 
   redisRows.forEach((payload, idx) => {
-    const symbol = DEFAULT_SYMBOLS[idx];
-    const ticker = hydrateTickerFromRedis(payload, symbol);
+    const storageSymbol = marketSymbols[idx];
+    const baseSymbol = normalizeSymbol(storageSymbol);
+    const ticker = hydrateTickerFromRedis(payload, storageSymbol);
     if (ticker) {
-      prices[normalizeSymbol(symbol)] = ticker;
+      prices[baseSymbol] = ticker;
     } else {
-      missingSymbols.push(symbol);
+      missingSymbols.push(storageSymbol);
     }
   });
 
@@ -492,7 +537,7 @@ export async function getMarketSnapshot() {
   }
 
   return {
-    order: NORMALIZED_SYMBOLS,
+    order: trackedSymbols.map((s) => normalizeSymbol(s)),
     prices,
     serverTime: Date.now(),
     mode: "live",
@@ -500,12 +545,30 @@ export async function getMarketSnapshot() {
   };
 }
 
+export async function getLatestMarketHistoryTimestamp(symbol, timeframe) {
+  const pool = getPool();
+  const storageSymbol = ensureMarketSymbol(symbol);
+  const { rows } = await pool.query(
+    `
+    SELECT MAX(ts) AS ts
+    FROM market_price_history
+    WHERE symbol = $1 AND timeframe = $2
+    `,
+    [storageSymbol, timeframe]
+  );
+  const ts = rows[0]?.ts;
+  if (!ts) return null;
+  const ms = new Date(ts).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 export async function getTickerRows() {
+  await loadAllModelAllowedSymbols();
   const snapshot = await getMarketSnapshot();
   return snapshot.order.map((symbol) => {
     const ticker = snapshot.prices[symbol];
     return {
-      symbol,
+      symbol: ensureMarketSymbol(symbol),
       price: ticker ? toNumber(ticker.price) : 0,
       change: ticker?.change ?? null,
     };
@@ -807,7 +870,9 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
 export async function listAgentModels(options = {}) {
   const { includeDisabled = true, includeSecrets = true } = options;
   const pool = getPool();
+  await ensureAgentModelSchema();
   await ensurePromptTemplateSchema();
+  await loadAllModelAllowedSymbols();
   const { rows } = await pool.query(
     `
     SELECT
@@ -835,7 +900,9 @@ export async function listAgentModels(options = {}) {
 
 export async function getAgentModelById(modelId, { includeSecrets = true } = {}) {
   const pool = getPool();
+  await ensureAgentModelSchema();
   await ensurePromptTemplateSchema();
+  await loadAllModelAllowedSymbols();
   const { rows } = await pool.query(
     `
     SELECT
@@ -879,6 +946,7 @@ async function resolvePromptTemplate(templateId) {
 
 export async function createAgentModel(payload) {
   const pool = getPool();
+  await ensureAgentModelSchema();
 
   const {
     model_id,
@@ -891,6 +959,7 @@ export async function createAgentModel(payload) {
     auto_run_interval_minutes = 5,
     display_icon = DEFAULT_MODEL_ICON,
     margin_config = {},
+    allowed_symbols = null,
   } = payload;
 
   const template = await resolvePromptTemplate(prompt_template_id);
@@ -899,6 +968,7 @@ export async function createAgentModel(payload) {
     ? Math.max(1, Number(auto_run_interval_minutes))
     : 5;
   const startingEquity = 10000;
+  const allowedSymbolsNormalized = normalizeAllowedSymbolsList(allowed_symbols);
 
   const { rows } = await pool.query(
     `
@@ -912,9 +982,10 @@ export async function createAgentModel(payload) {
       auto_run_enabled,
       auto_run_interval_minutes,
       display_icon,
-      margin_config
+      margin_config,
+      allowed_symbols
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     RETURNING *
     `,
     [
@@ -928,6 +999,7 @@ export async function createAgentModel(payload) {
       sanitizedInterval,
       display_icon ?? DEFAULT_MODEL_ICON,
       margin_config ?? {},
+      allowedSymbolsNormalized,
     ]
   );
 
@@ -966,6 +1038,7 @@ export async function updateAgentModel(modelId, updates) {
     last_auto_run_at: "last_auto_run_at",
     next_auto_run_at: "next_auto_run_at",
     margin_config: "margin_config",
+    allowed_symbols: "allowed_symbols",
   };
 
   const nextUpdates = { ...updates };
@@ -990,6 +1063,12 @@ export async function updateAgentModel(modelId, updates) {
     const parsed = Number(nextUpdates.auto_run_interval_minutes);
     nextUpdates.auto_run_interval_minutes =
       Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.round(parsed)) : 5;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(nextUpdates, "allowed_symbols")) {
+    nextUpdates.allowed_symbols = normalizeAllowedSymbolsList(
+      Array.isArray(nextUpdates.allowed_symbols) ? nextUpdates.allowed_symbols : []
+    );
   }
 
   const fields = [];
@@ -1038,6 +1117,7 @@ export async function updateAgentModel(modelId, updates) {
   logger.info("dataRepository", "updateAgentModel rows", rows);
 
   if (!rows.length) return null;
+  await loadAllModelAllowedSymbols();
   return mapModelRow(rows[0]);
 }
 
@@ -1499,12 +1579,9 @@ export async function markToMarketAllModels() {
 
   const modelIds = tradable.map((account) => account.model_id);
   const positionsByModel = await getOpenPositionsGrouped(modelIds);
-  const fundingConfig = getFundingConfig();
-  let fundingRates = {};
-  if (fundingConfig.enabled) {
-    const snapshot = await getMarketSnapshot();
-    fundingRates = buildFundingRateMap(snapshot);
-  }
+  const fundingConfig = { enabled: true, mode: "real", fixed_rate: 0 };
+  const snapshot = await getMarketSnapshot();
+  const fundingRates = buildFundingRateMap(snapshot);
 
   const updatedModels = [];
   const equitySnapshots = [];
@@ -1546,19 +1623,17 @@ export async function markToMarketAllModels() {
       });
     }
     let metadata = account.metadata ?? {};
-    if (fundingConfig.enabled) {
-      const fundingResult = applyFundingSettlements(
-        { ...account, metadata },
-        modelPositions,
-        fundingRates,
-        fundingConfig,
-        now.getTime()
-      );
-      if (fundingResult.walletDelta) {
-        walletBalance += fundingResult.walletDelta;
-      }
-      metadata = fundingResult.metadata;
+    const fundingResult = applyFundingSettlements(
+      { ...account, metadata },
+      modelPositions,
+      fundingRates,
+      fundingConfig,
+      now.getTime()
+    );
+    if (fundingResult.walletDelta) {
+      walletBalance += fundingResult.walletDelta;
     }
+    metadata = fundingResult.metadata;
     let summary = summarizeMarginAccount(walletBalance, modelPositions);
     let positionMargin = summary.totalInitialMargin;
     let marginBySymbol = { ...(summary.marginBySymbol ?? {}) };
@@ -2759,7 +2834,7 @@ export async function getModeState() {
   };
 }
 
-export { normalizeSymbol, DEFAULT_SYMBOLS, NORMALIZED_SYMBOLS };
+export { normalizeSymbol, loadAllModelAllowedSymbols };
 
 export async function countAgentLogs(modelId) {
   const pool = getPool();
@@ -2779,38 +2854,32 @@ export async function countAgentLogs(modelId) {
  * @returns {Promise<number>} 更新的交易对数量
  */
 export async function updateMarketPricesFromBinance() {
-  const symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'DOGE', 'XRP'];
-  const binanceSymbols = symbols.map(s => s + 'USDT');
+  await loadAllModelAllowedSymbols();
+  const symbols = getTrackedSymbols();
+  if (!symbols.length) return 0;
   const pool = getPool();
-  
+
   try {
-    // 动态导�?node-fetch（避�?ESM 问题�?
-    const fetch = (await import('node-fetch')).default;
-    
-    // 批量获取所有交易对的行�?
-    const response = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+    const fetch = (await import("node-fetch")).default;
+    const response = await fetch(`${BINANCE_API_BASE}/api/v3/ticker/24hr`);
     if (!response.ok) {
       throw new Error(`Binance API error: ${response.status}`);
     }
-    
     const allTickers = await response.json();
-    const tickerMap = {};
-    
-    // 构建映射表（从 BTCUSDT -> BTC）
-    allTickers.forEach(ticker => {
-      if (binanceSymbols.includes(ticker.symbol)) {
-        const cleanSymbol = ticker.symbol.replace('USDT', '');
-        tickerMap[cleanSymbol] = ticker;
-      }
+
+    const allowedSet = new Set(
+      symbols.map((s) => ensureMarketSymbol(s)).map((s) => s.toUpperCase())
+    );
+    const filtered = allTickers.filter((t) => {
+      const sym = String(t.symbol || "").toUpperCase();
+      if (!sym.endsWith("USDT")) return false;
+      if (/UP|DOWN|BEAR|BULL/i.test(sym)) return false;
+      return allowedSet.has(sym);
     });
-    
-    // 更新数据库
+
     let updated = 0;
-    for (const symbol of symbols) {
-      const ticker = tickerMap[symbol];
-      if (!ticker) continue;
-      const storageSymbol = ensureMarketSymbol(symbol);
-      
+    for (const ticker of filtered) {
+      const storageSymbol = ticker.symbol;
       await pool.query(
         `
         INSERT INTO market_prices (
@@ -2832,22 +2901,20 @@ export async function updateMarketPricesFromBinance() {
           parseFloat(ticker.priceChangePercent),
           parseFloat(ticker.highPrice),
           parseFloat(ticker.lowPrice),
-          parseFloat(ticker.volume),
-          ticker.closeTime ? new Date(ticker.closeTime) : new Date()
+          parseFloat(ticker.quoteVolume ?? ticker.volume ?? 0),
+          ticker.closeTime ? new Date(ticker.closeTime) : new Date(),
         ]
       );
-      
       updated++;
     }
-    
-    logger.info(
-      "dataRepository",
-      `[updateMarketPricesFromBinance] Updated ${updated} symbols`
-    );
+
+    logger.info("dataRepository", "[updateMarketPricesFromBinance] Updated symbols", {
+      updated,
+      tracked: symbols.length,
+    });
     return updated;
   } catch (error) {
-    console.error('Market price update failed:', error.message);
-    // 不抛出错误，让系统继续运�?
+    console.error("Market price update failed:", error.message);
     return 0;
   }
 }
@@ -2873,6 +2940,20 @@ export async function initializeBtcBenchmark() {
   try {
     await client.query("BEGIN");
 
+    const fetchRemoteBtcPrice = async () => {
+      try {
+        const fetch = (await import("node-fetch")).default;
+        const url = `${BINANCE_API_BASE}/api/v3/ticker/price?symbol=BTCUSDT`;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const body = await resp.json();
+        const price = Number(body?.price ?? body?.priceMid ?? 0);
+        return Number.isFinite(price) && price > 0 ? price : null;
+      } catch {
+        return null;
+      }
+    };
+
     const fetchPrice = async () => {
       const candidates = ["BTC", "BTCUSDT"]; // 支持两种存储格式
       for (const symbol of candidates) {
@@ -2891,6 +2972,16 @@ export async function initializeBtcBenchmark() {
     if (!btcPrice) {
       await updateMarketPricesFromBinance();
       btcPrice = await fetchPrice();
+    }
+    if (!btcPrice) {
+      btcPrice = await fetchRemoteBtcPrice();
+      if (btcPrice) {
+        await upsertMarketPrice({
+          symbol: "BTC",
+          price: btcPrice,
+          last_update_ts: new Date(),
+        });
+      }
     }
 
     if (!btcPrice) {
@@ -2915,9 +3006,10 @@ export async function initializeBtcBenchmark() {
         prompt_template_id,
         auto_run_enabled,
         auto_run_interval_minutes,
-        display_icon
+        display_icon,
+        allowed_symbols
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       ON CONFLICT (model_id) DO NOTHING
       `,
       [
@@ -2928,8 +3020,9 @@ export async function initializeBtcBenchmark() {
         false,
         template.id,
         false,
-        60,
+        null,
         "icon:gpt",
+        ["BTC"],
       ]
     );
 

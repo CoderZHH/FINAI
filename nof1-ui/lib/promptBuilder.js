@@ -39,6 +39,7 @@ import {
   getOpenPositions,
   getRuntimeAccount,
   getTrackedSymbols,
+  normalizeSymbol,
 } from "./dataRepository.js";
 
 // ============================================================================
@@ -240,12 +241,13 @@ function formatMarketSection(symbol, snapshot, minuteSeries, htfSeries) {
  *   多个 section 之间用换行分隔
  */
 export async function buildMarketStateText(symbols = getTrackedSymbols()) {
+  const symbolList = Array.from(new Set(symbols.map((s) => normalizeSymbol(s))));
   // 获取所有交易对的最新快照
   const snapshot = await getMarketSnapshot();
   
   // 并行加载每个交易对的时序数据和格式化
   const sections = await Promise.all(
-    symbols.map(async (symbol) => {
+    symbolList.map(async (symbol) => {
       const priceRow = snapshot.prices[symbol]; // 当前快照
       
       // 并行加载两个时间框架的数据
@@ -415,7 +417,12 @@ export async function buildPromptReplacements(model, options = {}) {
   // 步骤 1: 准备基础数据
   // ------------------------------------------------------------------------
   const now = new Date();
-  const symbols = options.symbols ?? getTrackedSymbols();
+  const symbols =
+    options.symbols && options.symbols.length
+      ? options.symbols
+      : Array.isArray(model.allowed_symbols) && model.allowed_symbols.length
+        ? model.allowed_symbols
+        : getTrackedSymbols();
   
   // 并行加载所有必需的数据 (优化性能)
   const [marketStateText, positionStateText, account, invocationCount] = await Promise.all([

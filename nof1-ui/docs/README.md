@@ -10,12 +10,11 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
    npm install
    ```
 2. **Environment** – copy `.env.example` to `.env.local` and fill `POSTGRES_URL`, `POSTGRES_SSL` (if needed), `REDIS_URL`, and LLM credentials (`api_base_url` / `api_key`).
-3. **Database reset & seed**
+3. **Database reset** (dev server already runs this)
    ```bash
-   npm run seed:static   # rewrites schema, seeds prompt templates & prompt metadata
-   Invoke-WebRequest -Uri "http://localhost:3000/api/benchmark/init" -Method POST  # fund BTC benchmark
+   node scripts/reset-db.js
    ```
-4. **Run locally**
+4. **Run locally** – market data will auto-import for every model `allowed_symbols` (including the BTC benchmark) when the server starts
    ```bash
    npm run dev
    ```
@@ -42,7 +41,7 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
 - `npm run build && npm run start` – production build & serve.
 - `npm run lint` – lint the codebase (requires Node ≥20.9). 
 - `node scripts/reset-db.js` – destructive schema reset; rerun any time the DB drifts.
-- `node scripts/get_market.js` – optional Binance history import.
+- 市场数据与指标：启动时会自动为所有模型的 `allowed_symbols`（含 BTC 基准）导入历史 1m/4h K 线，并在运行时持续增量同步。
 
 ## Project Map (功能树)
 

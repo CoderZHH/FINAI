@@ -97,27 +97,8 @@ async function seedDefaultPromptTemplate(pool) {
 }
 
 async function seedRiskLimits(pool) {
-  await pool.query(
-    `
-    INSERT INTO risk_limits (symbol, tier, notional_cap, max_leverage, imr, mmr) VALUES
-      ('BTCUSDT', 1,  50000, 125, 0.0080, 0.0040),
-      ('BTCUSDT', 2, 250000,  75, 0.0200, 0.0100),
-      ('ETHUSDT', 1,  20000, 100, 0.0100, 0.0050),
-      ('ETHUSDT', 2, 100000,  50, 0.0200, 0.0100),
-      ('BNBUSDT', 1,  10000,  50, 0.0200, 0.0100),
-      ('SOLUSDT', 1,   8000,  50, 0.0250, 0.0125),
-      ('XRPUSDT', 1,   5000,  30, 0.0300, 0.0150),
-      ('DOGEUSDT',1,   5000,  20, 0.0500, 0.0250)
-    ON CONFLICT (symbol, tier) DO UPDATE
-    SET
-      notional_cap = EXCLUDED.notional_cap,
-      max_leverage = EXCLUDED.max_leverage,
-      imr = EXCLUDED.imr,
-      mmr = EXCLUDED.mmr;
-    `
-  );
-
-  logger.info(LOG_MODULE, "risk_limits seeded.");
+  // 不再预置分层，交由 Binance 同步或手动配置
+  logger.info(LOG_MODULE, "risk_limits seeding skipped (no defaults).");
 }
 
 async function seedInsuranceFund(pool) {
@@ -134,18 +115,16 @@ async function seedInsuranceFund(pool) {
 }
 
 async function seedSimSettings(pool) {
-  const defaultFees = { default: { maker: 0.0002, taker: 0.0004 } };
-  const defaultFunding = { enabled: false, mode: "real", fixed_rate: 0.0001 };
+  const defaultFees = { default: { maker: 0.001, taker: 0.001 } };
   await pool.query(
     `
-    INSERT INTO sim_settings (id, fees, funding, updated_at)
-    VALUES (1, $1, $2, now())
+    INSERT INTO sim_settings (id, fees, updated_at)
+    VALUES (1, $1, now())
     ON CONFLICT (id) DO UPDATE
     SET fees = EXCLUDED.fees,
-        funding = EXCLUDED.funding,
         updated_at = now()
     `,
-    [defaultFees, defaultFunding]
+    [defaultFees]
   );
   logger.info(LOG_MODULE, "sim_settings seeded.");
 }
@@ -207,6 +186,7 @@ async function ensureSchema(pool) {
       next_auto_run_at TIMESTAMPTZ,
       display_icon TEXT DEFAULT 'icon:gpt',
       margin_config JSONB DEFAULT '{}'::jsonb,
+      allowed_symbols TEXT[],
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
@@ -302,7 +282,6 @@ async function ensureSchema(pool) {
     CREATE TABLE sim_settings (
       id INTEGER PRIMARY KEY DEFAULT 1,
       fees JSONB NOT NULL,
-      funding JSONB NOT NULL,
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);

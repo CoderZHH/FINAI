@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 
 const fetcher = (url) => fetch(url).then((res) => res.json());
@@ -36,8 +36,29 @@ function Hint({ text }) {
 }
 
 export default function SettingsPage() {
-  const { data: configData, mutate } = useSWR("/api/sim-config", fetcher);
-  const { data: symbolsData } = useSWR("/api/symbols", fetcher);
+  const { data: configData } = useSWR("/api/sim-config", fetcher, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    refreshInterval: 0,
+  });
+  const { data: riskData, mutate: mutateRisk } = useSWR(
+    "/api/binance/risk",
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      refreshInterval: 0,
+    }
+  );
+  const { data: fundingData, mutate: mutateFunding } = useSWR(
+    "/api/binance/funding",
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      refreshInterval: 0,
+    }
+  );
   const [formState, setFormState] = useState(null);
   const [savingSection, setSavingSection] = useState(null);
   const [status, setStatus] = useState("");
@@ -47,30 +68,6 @@ export default function SettingsPage() {
       setFormState(clone(configData));
     }
   }, [configData]);
-
-  useEffect(() => {
-    if (formState && !Array.isArray(formState.risk_limits)) {
-      setFormState((prev) => ({ ...prev, risk_limits: [] }));
-    }
-  }, [formState]);
-
-  const symbolList = useMemo(() => {
-    const fromApi =
-      symbolsData?.symbols?.map((s) => s.toUpperCase()) ?? [];
-    const fromConfig = Object.keys(formState?.symbols ?? {}).map((s) =>
-      s.toUpperCase()
-    );
-    const merged = new Set([...fromApi, ...fromConfig]);
-    return Array.from(merged).sort();
-  }, [symbolsData, formState]);
-
-  const feeSymbols = useMemo(() => {
-    const overrides = Object.keys(formState?.fees ?? {})
-      .filter((key) => key !== "default")
-      .map((s) => s.toUpperCase());
-    const merged = new Set([...symbolList, ...overrides]);
-    return Array.from(merged).sort();
-  }, [symbolList, formState]);
 
   const handleFeeChange = (symbol, field, value) => {
     setFormState((prev) => {
@@ -83,36 +80,9 @@ export default function SettingsPage() {
     });
   };
 
-  const clearFeeOverride = (symbol) => {
-    setFormState((prev) => {
-      const next = clone(prev ?? {});
-      if (next.fees) {
-        delete next.fees[symbol];
-      }
-      return next;
-    });
-  };
-
-  const handleFundingChange = (field, value) => {
-    setFormState((prev) => {
-      const next = clone(prev ?? {});
-      next.funding = next.funding ?? {};
-      next.funding[field] = value;
-      return next;
-    });
-  };
-
   const saveConfig = async (label, section) => {
     if (!formState) return;
     const payloadToSend = clone(formState);
-    if (Array.isArray(payloadToSend.risk_limits)) {
-      payloadToSend.risk_limits = payloadToSend.risk_limits
-        .map((row) => ({
-          ...row,
-          symbol: String(row.symbol ?? "").trim().toUpperCase(),
-        }))
-        .filter((row) => row.symbol);
-    }
     setSavingSection(section);
     setStatus("");
     try {
@@ -126,7 +96,6 @@ export default function SettingsPage() {
         throw new Error(responseBody.error || "保存失败");
       }
       setFormState(clone(responseBody));
-      mutate(responseBody, false);
       setStatus(`${label} 设置已保存`);
     } catch (error) {
       setStatus(error.message || "保存失败");
@@ -136,48 +105,36 @@ export default function SettingsPage() {
     }
   };
 
-  const handleRiskChange = (index, field, value) => {
-    setFormState((prev) => {
-      const next = clone(prev ?? {});
-      next.risk_limits = Array.isArray(next.risk_limits) ? next.risk_limits : [];
-      next.risk_limits[index] = {
-        ...(next.risk_limits[index] ?? {
-          symbol: "",
-          tier: 1,
-          notional_cap: 0,
-          max_leverage: 1,
-          imr: 0,
-          mmr: 0,
-        }),
-        [field]: value,
-      };
-      return next;
-    });
+  const riskLimits = riskData?.risk_limits ?? [];
+  const fundingRates = fundingData?.funding_rates ?? {};
+
+  const syncFromBinance = async (scope) => {
+    setStatus(`正在同步 ${scope === "risk" ? "风险分层" : "资金费"}...`);
+    try {
+      const base = scope === "risk" ? "/api/binance/risk" : "/api/binance/funding";
+      const resp = await fetch(base, { method: "POST" });
+      const body = await resp.json();
+      if (!resp.ok) {
+        throw new Error(body?.error || "同步失败，请检查代理/网络");
+      }
+      if (scope === "risk") {
+        await mutateRisk();
+        setStatus("已同步风险分层");
+      } else {
+        await mutateFunding();
+        setStatus("已同步资金费");
+      }
+    } catch (error) {
+      setStatus(error?.message || "同步失败");
+    } finally {
+      setTimeout(() => setStatus(""), 4000);
+    }
   };
 
-  const addRiskRow = () => {
-    setFormState((prev) => {
-      const next = clone(prev ?? {});
-      next.risk_limits = Array.isArray(next.risk_limits) ? next.risk_limits : [];
-      next.risk_limits.push({
-        symbol: "",
-        tier: (next.risk_limits.at(-1)?.tier ?? 0) + 1,
-        notional_cap: 0,
-        max_leverage: 1,
-        imr: 0,
-        mmr: 0,
-      });
-      return next;
-    });
-  };
+  const handleSyncRisk = () => syncFromBinance("risk");
+  const handleSyncFunding = () => syncFromBinance("funding");
 
-  const removeRiskRow = (index) => {
-    setFormState((prev) => {
-      const next = clone(prev ?? {});
-      next.risk_limits = (next.risk_limits ?? []).filter((_, i) => i !== index);
-      return next;
-    });
-  };
+  // 自动同步由 autoRunner 负责；此处不做额外定时。
 
   if (!formState) {
     return (
@@ -213,7 +170,7 @@ export default function SettingsPage() {
 
       <SectionCard
         title="手续费费率"
-        description="设置默认 Maker/Taker 费率，以及特定交易对的覆盖值。"
+        description="设置全局 Maker/Taker 费率（不区分币种）。默认 0.1% / 0.1%。"
         footer={
           <button
             type="button"
@@ -265,239 +222,48 @@ export default function SettingsPage() {
             />
           </label>
         </div>
-        <div className="mt-6 overflow-hidden rounded-xl border border-neutral-200">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50 text-left text-xs font-semibold text-neutral-500">
-              <tr>
-                <th className="px-4 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Symbol <Hint text="交易对，大写，例如 BTCUSDT。" />
-                  </span>
-                </th>
-                <th className="px-4 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Maker <Hint text="该交易对的挂单手续费覆盖值。" />
-                  </span>
-                </th>
-                <th className="px-4 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Taker <Hint text="该交易对的吃单手续费覆盖值。" />
-                  </span>
-                </th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {feeSymbols.map((symbol) => {
-                if (symbol === "DEFAULT") return null;
-                return (
-                  <tr
-                    key={symbol}
-                    className="border-t border-neutral-200 text-sm text-neutral-700"
-                  >
-                    <td className="px-4 py-2 font-medium">{symbol}</td>
-                    <td className="px-4 py-2">
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="w-full rounded-lg border border-neutral-300 px-2 py-1 text-sm"
-                        value={formState.fees?.[symbol]?.maker ?? ""}
-                        placeholder={String(
-                          formState.fees?.default?.maker ?? 0
-                        )}
-                        onChange={(event) =>
-                          handleFeeChange(
-                            symbol,
-                            "maker",
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value)
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="px-4 py-2">
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="w-full rounded-lg border border-neutral-300 px-2 py-1 text-sm"
-                        value={formState.fees?.[symbol]?.taker ?? ""}
-                        placeholder={String(
-                          formState.fees?.default?.taker ?? 0
-                        )}
-                        onChange={(event) =>
-                          handleFeeChange(
-                            symbol,
-                            "taker",
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value)
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      {formState.fees?.[symbol] ? (
-                        <button
-                          type="button"
-                          onClick={() => clearFeeOverride(symbol)}
-                          className="text-xs font-semibold text-rose-600 hover:underline"
-                        >
-                          清除
-                        </button>
-                      ) : (
-                        <span className="text-xs text-neutral-400">继承默认</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
       </SectionCard>
 
       <SectionCard
         title="风控分层"
-        description="为每个交易对配置分级名义上限、最大杠杆与 IMR/MMR。"
+        description="从 Binance 自动同步杠杆分层，以下为只读展示。"
         footer={
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={addRiskRow}
-              className="rounded-full border border-neutral-300 px-4 py-1.5 text-sm font-semibold text-neutral-700 shadow-sm transition hover:bg-neutral-50"
-            >
-              新增档位
-            </button>
-            <button
-              type="button"
-              onClick={() => saveConfig("风控分层", "risk")}
-              disabled={savingSection === "risk"}
-              className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700 disabled:opacity-50"
-            >
-              {savingSection === "risk" ? "保存中..." : "保存分层设置"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleSyncRisk}
+            className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700"
+          >
+            同步风险分层
+          </button>
         }
       >
         <div className="overflow-auto rounded-xl border border-neutral-200">
           <table className="min-w-full text-sm">
             <thead className="bg-neutral-50 text-left text-xs font-semibold text-neutral-500">
               <tr>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Symbol <Hint text="交易对，大写，例如 BTCUSDT。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Tier <Hint text="分层编号，1 为最低阶，越大代表更高名义区间。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Notional Cap <Hint text="该层最大名义（USDT），超过则落入下一层。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    Max Lev <Hint text="该层允许的最大杠杆。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    IMR <Hint text="初始保证金率，开仓所需（占名义比例）。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1">
-                    MMR <Hint text="维持保证金率，低于则触发强平流程。" />
-                  </span>
-                </th>
-                <th className="px-3 py-2"></th>
+                <th className="px-3 py-2">Symbol</th>
+                <th className="px-3 py-2">Tier</th>
+                <th className="px-3 py-2">Notional Cap</th>
+                <th className="px-3 py-2">Max Lev</th>
+                <th className="px-3 py-2">IMR</th>
+                <th className="px-3 py-2">MMR</th>
               </tr>
             </thead>
             <tbody>
-              {(formState.risk_limits ?? []).map((row, index) => (
+              {(riskLimits ?? []).map((row, index) => (
                 <tr key={`${row.symbol}-${row.tier}-${index}`} className="border-t border-neutral-200">
-                  <td className="px-3 py-2">
-                    <input
-                      className="w-24 rounded-lg border border-neutral-300 px-2 py-1 text-sm uppercase shadow-sm"
-                      value={row.symbol ?? ""}
-                      onChange={(event) =>
-                        handleRiskChange(index, "symbol", event.target.value.toUpperCase())
-                      }
-                      placeholder="BTCUSDT"
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-16 rounded-lg border border-neutral-300 px-2 py-1 text-sm shadow-sm"
-                      value={row.tier ?? 1}
-                      min={1}
-                      onChange={(event) =>
-                        handleRiskChange(index, "tier", Number(event.target.value || 1))
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-28 rounded-lg border border-neutral-300 px-2 py-1 text-sm shadow-sm"
-                      value={row.notional_cap ?? 0}
-                      onChange={(event) =>
-                        handleRiskChange(index, "notional_cap", Number(event.target.value || 0))
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-20 rounded-lg border border-neutral-300 px-2 py-1 text-sm shadow-sm"
-                      value={row.max_leverage ?? 1}
-                      onChange={(event) =>
-                        handleRiskChange(index, "max_leverage", Number(event.target.value || 1))
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      step="0.0001"
-                      className="w-20 rounded-lg border border-neutral-300 px-2 py-1 text-sm shadow-sm"
-                      value={row.imr ?? 0}
-                      onChange={(event) =>
-                        handleRiskChange(index, "imr", Number(event.target.value || 0))
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      step="0.0001"
-                      className="w-20 rounded-lg border border-neutral-300 px-2 py-1 text-sm shadow-sm"
-                      value={row.mmr ?? 0}
-                      onChange={(event) =>
-                        handleRiskChange(index, "mmr", Number(event.target.value || 0))
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => removeRiskRow(index)}
-                      className="text-xs font-semibold text-rose-600 hover:underline"
-                    >
-                      删除
-                    </button>
-                  </td>
+                  <td className="px-3 py-2 font-medium">{row.symbol}</td>
+                  <td className="px-3 py-2">{row.tier}</td>
+                  <td className="px-3 py-2">{row.notional_cap}</td>
+                  <td className="px-3 py-2">{row.max_leverage}</td>
+                  <td className="px-3 py-2">{row.imr}</td>
+                  <td className="px-3 py-2">{row.mmr}</td>
                 </tr>
               ))}
-              {(!formState.risk_limits || formState.risk_limits.length === 0) && (
+              {!riskLimits?.length && (
                 <tr className="border-t border-neutral-200">
-                  <td colSpan={7} className="px-3 py-4 text-center text-xs text-neutral-500">
-                    暂无档位，点击“新增档位”添加。
+                  <td colSpan={6} className="px-3 py-4 text-center text-xs text-neutral-500">
+                    暂无数据，点击“同步 Binance 数据”尝试刷新。
                   </td>
                 </tr>
               )}
@@ -508,65 +274,42 @@ export default function SettingsPage() {
 
       <SectionCard
         title="资金费设置"
-        description="开关资金费、选择实时或固定费率模式。"
+        description="展示从 Binance 获取的最新资金费率，结果只读。"
         footer={
           <button
             type="button"
-            onClick={() => saveConfig("资金费", "funding")}
-            disabled={savingSection === "funding"}
-            className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700 disabled:opacity-50"
+            onClick={handleSyncFunding}
+            className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700"
           >
-            {savingSection === "funding" ? "保存中..." : "保存资金费设置"}
+            刷新资金费
           </button>
         }
       >
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="flex items-center gap-2 text-sm font-medium text-neutral-600">
-            <input
-              type="checkbox"
-              checked={Boolean(formState.funding?.enabled)}
-              onChange={(event) =>
-                handleFundingChange("enabled", event.target.checked)
-              }
-              className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
-            />
-            <span className="inline-flex items-center gap-2">
-              启用资金费
-              <Hint text="关闭后不计算资金费率，实时/固定设置将被忽略。" />
-            </span>
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="inline-flex items-center gap-2 text-neutral-600">
-              模式
-              <Hint text="实时：使用导入的市场资金费率；固定：使用自定义费率（每 8 小时）。" />
-            </span>
-            <select
-              className="rounded-lg border border-neutral-300 px-3 py-2 text-sm shadow-sm"
-              value={formState.funding?.mode ?? "real"}
-              onChange={(event) =>
-                handleFundingChange("mode", event.target.value)
-              }
-            >
-              <option value="real">实时历史费率</option>
-              <option value="fixed">固定费率</option>
-            </select>
-          </label>
+        <div className="overflow-hidden rounded-xl border border-neutral-200">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50 text-left text-xs font-semibold text-neutral-500">
+              <tr>
+                <th className="px-3 py-2">Symbol</th>
+                <th className="px-3 py-2">Funding Rate (8h)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(fundingRates).map(([symbol, rate]) => (
+                <tr key={symbol} className="border-t border-neutral-200">
+                  <td className="px-3 py-2 font-medium">{symbol}</td>
+                  <td className="px-3 py-2">{Number(rate ?? 0)}</td>
+                </tr>
+              ))}
+              {!Object.keys(fundingRates).length && (
+                <tr className="border-t border-neutral-200">
+                  <td colSpan={2} className="px-3 py-4 text-center text-xs text-neutral-500">
+                    暂无资金费数据，点击“刷新资金费”同步。
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        <label className="mt-4 block text-sm">
-          <span className="inline-flex items-center gap-2 text-neutral-600">
-            固定费率（每 8 小时）
-            <Hint text="仅在模式为固定时生效，按 8 小时结算周期应用。" />
-          </span>
-          <input
-            type="number"
-            step="0.00001"
-            className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm shadow-sm"
-            value={formState.funding?.fixed_rate ?? 0.0001}
-            onChange={(event) =>
-              handleFundingChange("fixed_rate", Number(event.target.value || 0))
-            }
-          />
-        </label>
       </SectionCard>
     </div>
   );

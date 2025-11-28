@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { createAgentModel, listAgentModels } from "../../../lib/dataRepository";
+import {
+  createAgentModel,
+  listAgentModels,
+  loadAllModelAllowedSymbols,
+  updateMarketPricesFromBinance,
+} from "../../../lib/dataRepository";
 import { ensureAutoRunner } from "../../../lib/autoRunner";
+import { importMarketData } from "../../../lib/marketImporter.js";
 
 ensureAutoRunner();
 
@@ -30,6 +36,14 @@ function normalizeMarginConfigInput(input) {
     acc[sym] = value === "isolated" ? "isolated" : "cross";
     return acc;
   }, {});
+}
+
+function normalizeAllowedSymbolsInput(input) {
+  const list = Array.isArray(input) ? input : [];
+  const cleaned = list
+    .map((s) => String(s ?? "").trim().toUpperCase().replace(/USDT$/i, ""))
+    .filter(Boolean);
+  return Array.from(new Set(cleaned));
 }
 
 export async function GET(request) {
@@ -79,9 +93,25 @@ export async function POST(request) {
       display_icon:
         typeof payload.display_icon === "string" ? payload.display_icon : undefined,
       margin_config: normalizeMarginConfigInput(payload.margin_config),
+      allowed_symbols: normalizeAllowedSymbolsInput(payload.allowed_symbols),
     };
+    if (!cleanPayload.allowed_symbols.length) {
+      return Response.json({ error: "allowed_symbols cannot be empty" }, { status: 400 });
+    }
 
     const model = await createAgentModel(cleanPayload);
+    // 冷启动：导入历史行情并同步风险/资金费
+    try {
+      await importMarketData(cleanPayload.allowed_symbols);
+      const symbolParam = encodeURIComponent(cleanPayload.allowed_symbols.join(","));
+      await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/risk?symbols=${symbolParam}`, { method: "POST" });
+      await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/funding?symbols=${symbolParam}`, { method: "POST" });
+    } catch (seedErr) {
+      console.warn("[POST /api/models] seed failed", seedErr?.message);
+    }
+    await loadAllModelAllowedSymbols();
+    // 尝试刷新行情以覆盖新符号
+    updateMarketPricesFromBinance().catch(() => {});
     return Response.json({ model });
   } catch (err) {
     console.error("[POST /api/models] failed", err);

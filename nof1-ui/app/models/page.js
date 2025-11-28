@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "classnames";
 import useSWR from "swr";
+import CoinBadge from "../../components/CoinBadge";
 import {
   DEFAULT_MODEL_ICON,
   MODEL_ICON_CHOICES,
@@ -53,7 +54,7 @@ const fetcher = async (url) => {
   return response.json();
 };
 
-const DEFAULT_MARGIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT"];
+const DEFAULT_MARGIN_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
 /** @type {ProviderId} */
 const DEFAULT_PROVIDER = "deepseek";
 const PROVIDER_ICON_MAP = PROVIDER_OPTIONS.reduce((acc, option) => {
@@ -144,6 +145,7 @@ const EMPTY_FORM = {
   prompt_template_id: "",
   display_icon: DEFAULT_MODEL_ICON,
   margin_config: {},
+  allowed_symbols: [],
 };
 
 function formatDate(timestamp) {
@@ -188,6 +190,10 @@ function truncate(text, max = 140) {
   if (!text) return "（未设置）";
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function normalizeSymbolBase(symbol = "") {
+  return String(symbol ?? "").toUpperCase().replace(/USDT$/i, "");
 }
 
 function extractTokensFromText(...payloads) {
@@ -763,6 +769,8 @@ function FormModal({
   saving,
   promptTemplates,
   symbols = [],
+  onOpenSymbolDrawer = () => {},
+  onLoadMarketList = () => {},
 }) {
   const isEdit = mode === "edit";
   const templateOptions = promptTemplates || [];
@@ -773,6 +781,15 @@ function FormModal({
     : null;
   const providerValue = formState.provider ?? DEFAULT_PROVIDER;
   const providerIconValue = getProviderIconValue(providerValue, formState.display_icon, formState.display_name);
+  const availableSymbols = useMemo(
+    () => (symbols.length ? symbols : DEFAULT_MARGIN_SYMBOLS),
+    [symbols]
+  );
+  const allowedSelection =
+    Array.isArray(formState.allowed_symbols) && formState.allowed_symbols.length
+      ? formState.allowed_symbols
+      : availableSymbols;
+
   useEffect(() => {
     if (selectedTemplate) {
       onChange((prev) => ({
@@ -828,6 +845,25 @@ function FormModal({
         ...(prev.margin_config ?? {}),
         [symbol]: normalized,
       },
+    }));
+  };
+
+  const toggleAllowedSymbol = (symbol) => {
+    const normalized = String(symbol ?? "").toUpperCase().replace(/USDT$/i, "");
+    onChange((prev) => {
+      const current = Array.isArray(prev.allowed_symbols) ? prev.allowed_symbols : [];
+      const exists = current.includes(normalized);
+      const next = exists
+        ? current.filter((s) => s !== normalized)
+        : [...current, normalized];
+      return { ...prev, allowed_symbols: next };
+    });
+  };
+
+  const setAllAllowed = (value) => {
+    onChange((prev) => ({
+      ...prev,
+      allowed_symbols: value ? [...availableSymbols] : [],
     }));
   };
 
@@ -909,42 +945,86 @@ function FormModal({
             </label>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 p-5 bg-gray-50/50">
-          <div className="mb-4">
-            <h3 className="text-sm font-semibold text-gray-900">保证金模式</h3>
-            <p className="text-xs text-gray-500 mt-1">
-              配置各交易对的保证金模式（全仓/逐仓）
-            </p>
+        <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+          <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/80 px-5 py-4 backdrop-blur-sm">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">交易对配置</h3>
+              <p className="text-xs text-gray-500 mt-0.5">配置允许交易的币种及保证金模式</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onOpenSymbolDrawer();
+                onLoadMarketList();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition-all hover:bg-gray-800 hover:shadow-md active:scale-95"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              添加币种
+            </button>
           </div>
-          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                <tr>
-                  <th className="px-4 py-2.5">交易对</th>
-                  <th className="px-4 py-2.5">模式</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {(symbols.length ? symbols : DEFAULT_MARGIN_SYMBOLS).map((symbol) => {
-                  const value = formState.margin_config?.[symbol] ?? "cross";
-                  return (
-                    <tr key={symbol} className="text-sm text-gray-700 hover:bg-gray-50/50">
-                      <td className="px-4 py-2.5 font-medium font-mono text-xs">{symbol}</td>
-                      <td className="px-4 py-2.5">
-                        <select
-                          className="w-full rounded-lg border-gray-200 bg-gray-50 py-1.5 text-xs focus:border-blue-500 focus:ring-blue-500"
-                          value={value}
-                          onChange={(event) => handleMarginModeChange(symbol, event.target.value)}
-                        >
-                          <option value="cross">全仓 (Cross)</option>
-                          <option value="isolated">逐仓 (Isolated)</option>
-                        </select>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          
+          <div className="max-h-[320px] overflow-y-auto">
+            {allowedSelection.length === 0 ? (
+               <div className="flex flex-col items-center justify-center py-10 text-center">
+                  <div className="rounded-full bg-gray-100 p-3 mb-3">
+                    <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-medium text-gray-900">暂无交易币种</p>
+                  <p className="text-xs text-gray-500 mt-1">请点击右上角按钮添加</p>
+               </div>
+            ) : (
+              <table className="w-full text-sm text-left">
+                <thead className="bg-gray-50 text-xs font-medium text-gray-500 uppercase sticky top-0 z-10">
+                  <tr>
+                    <th className="px-5 py-3 font-medium">币种</th>
+                    <th className="px-5 py-3 font-medium text-right">保证金模式</th>
+                    <th className="px-5 py-3 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {allowedSelection.map((symbol) => {
+                     const marginValue = formState.margin_config?.[symbol] ?? "cross";
+                     return (
+                       <tr key={symbol} className="group hover:bg-gray-50/50 transition-colors">
+                         <td className="px-5 py-3">
+                           <div className="flex items-center gap-3">
+                             <CoinBadge symbol={symbol} size={28} />
+                             <span className="font-bold text-gray-900 font-mono">{symbol}</span>
+                           </div>
+                         </td>
+                         <td className="px-5 py-3 text-right">
+                            <select
+                              value={marginValue}
+                              onChange={(e) => handleMarginModeChange(symbol, e.target.value)}
+                              className="text-xs border-none bg-gray-100 rounded-lg py-1.5 pl-3 pr-8 focus:ring-0 cursor-pointer hover:bg-gray-200 transition-colors font-medium text-gray-700"
+                            >
+                              <option value="cross">全仓 (Cross)</option>
+                              <option value="isolated">逐仓 (Isolated)</option>
+                            </select>
+                         </td>
+                         <td className="px-5 py-3 text-right">
+                           <button
+                             type="button"
+                             onClick={() => toggleAllowedSymbol(symbol)}
+                             className="text-gray-300 hover:text-red-500 transition-colors p-1.5 rounded-md hover:bg-red-50"
+                             title="移除"
+                           >
+                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                             </svg>
+                           </button>
+                         </td>
+                       </tr>
+                     );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
 
@@ -1050,6 +1130,10 @@ export default function ModelsPage() {
     mutate: mutateTemplates,
   } = useSWR("/api/prompt-templates?includeContent=true", fetcher);
   const { data: symbolsData } = useSWR("/api/symbols", fetcher);
+  const [marketList, setMarketList] = useState([]);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState("");
+  const { data: configData, mutate: mutateConfig } = useSWR("/api/sim-config", fetcher);
 
 
   const promptTemplates = useMemo(() => templateData?.templates ?? [], [templateData]);
@@ -1062,6 +1146,14 @@ export default function ModelsPage() {
       DEFAULT_MARGIN_SYMBOLS;
     return Array.from(new Set(fromApi)).sort();
   }, [symbolsData]);
+  const riskMap = useMemo(() => {
+    const map = {};
+    (configData?.risk_limits ?? []).forEach((row) => {
+      const base = String(row.symbol ?? "").toUpperCase().replace(/USDT$/i, "");
+      if (!map[base]) map[base] = true;
+    });
+    return map;
+  }, [configData]);
   const normalizeMarginConfig = (source = {}) => {
     const universe = symbolOptions.length ? symbolOptions : DEFAULT_MARGIN_SYMBOLS;
     return universe.reduce((acc, symbol) => {
@@ -1082,6 +1174,14 @@ export default function ModelsPage() {
   // 提示词模板抽屉状态
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState(null);
+  const [symbolDrawerOpen, setSymbolDrawerOpen] = useState(false);
+  const [symbolSearch, setSymbolSearch] = useState("");
+  const [symbolSort, setSymbolSort] = useState("volume");
+  const [riskModalOpen, setRiskModalOpen] = useState(false);
+  const [riskDraft, setRiskDraft] = useState([]);
+  const [riskSaving, setRiskSaving] = useState(false);
+  // 确保按钮闭包能取到最新引用
+  const openSymbolDrawer = () => setSymbolDrawerOpen(true);
 
   const closeModal = () => {
     setModalState({ open: false, mode: "create" });
@@ -1109,10 +1209,12 @@ export default function ModelsPage() {
       provider: DEFAULT_PROVIDER,
       margin_config: normalizeMarginConfig(),
       display_icon: getProviderIconValue(DEFAULT_PROVIDER, DEFAULT_MODEL_ICON, ""),
+      allowed_symbols: symbolOptions,
       ...hydrateFormFromTemplate(fallbackTemplateId),
     });
     setEditingId(null);
     setErrorMessage(null);
+    loadMarketList();
   };
 
   const openCreateTemplate = () => {
@@ -1155,9 +1257,14 @@ export default function ModelsPage() {
           model.display_name
         ),
       margin_config: normalizeMarginConfig(model.margin_config || {}),
+      allowed_symbols:
+        (model.allowed_symbols && model.allowed_symbols.length
+          ? model.allowed_symbols
+          : symbolOptions),
     });
     setEditingId(model.model_id);
     setErrorMessage(null);
+    loadMarketList();
   };
 
   const handleDelete = async (model) => {
@@ -1228,7 +1335,37 @@ export default function ModelsPage() {
       auto_run_interval_minutes: formState.auto_run_interval_minutes,
       display_icon: resolvedIcon,
       margin_config: normalizeMarginConfig(formState.margin_config || {}),
+      allowed_symbols: (() => {
+        const cleaned = (formState.allowed_symbols || [])
+          .map((s) => String(s ?? "").toUpperCase().replace(/USDT$/i, ""))
+          .filter(Boolean);
+        return cleaned.length ? cleaned : symbolOptions.map((s) => s.replace(/USDT$/i, "").toUpperCase());
+      })(),
     };
+
+    if (!payload.allowed_symbols.length) {
+      setErrorMessage("请至少选择一个可交易币种");
+      setSaving(false);
+      return;
+    }
+
+    if (configData?.risk_limits) {
+      const missingRisk = payload.allowed_symbols.filter((s) => !riskMap[s]);
+      if (missingRisk.length) {
+        const defaults = missingRisk.map((base) => ({
+          symbol: `${base}USDT`,
+          tier: 1,
+          notional_cap: 50000,
+          max_leverage: 50,
+          imr: 0.02,
+          mmr: 0.01,
+        }));
+        setRiskDraft(defaults);
+        setRiskModalOpen(true);
+        setSaving(false);
+        return;
+      }
+    }
 
     if (formState.api_key.trim()) {
       payload.api_key = formState.api_key.trim();
@@ -1266,6 +1403,65 @@ export default function ModelsPage() {
       setErrorMessage(error?.message || "请求异常，请稍后重试");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 手动加载 Binance 列表
+  const loadMarketList = async (params = {}) => {
+    try {
+      setMarketLoading(true);
+      setMarketError("");
+      const url = new URL("/api/markets/binance", window.location.origin);
+      url.searchParams.set("sort", params.sort ?? symbolSort);
+      if (params.q ?? symbolSearch) {
+        url.searchParams.set("q", params.q ?? symbolSearch);
+      }
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const msg = body.error || "获取 Binance 数据失败";
+        setMarketError(msg);
+        setMarketList([]);
+        return;
+      }
+      const data = await res.json();
+      setMarketList(Array.isArray(data?.tickers) ? data.tickers : []);
+    } catch (err) {
+      setMarketError(err?.message || "获取 Binance 数据失败");
+      setMarketList([]);
+    } finally {
+      setMarketLoading(false);
+    }
+  };
+
+  const saveRiskDraft = async () => {
+    if (!riskDraft.length) {
+      setRiskModalOpen(false);
+      return;
+    }
+    setRiskSaving(true);
+    setStatus("");
+    try {
+      const payload = {
+        ...(configData ?? {}),
+        risk_limits: [...(configData?.risk_limits ?? []), ...riskDraft],
+      };
+      const res = await fetch("/api/sim-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body.error || "风险分层保存失败");
+      }
+      mutateConfig(body, false);
+      setStatus("风险分层已保存，请再次保存模型");
+      setRiskModalOpen(false);
+    } catch (err) {
+      setErrorMessage(err.message || "风险分层保存失败");
+    } finally {
+      setRiskSaving(false);
     }
   };
 
@@ -1416,7 +1612,268 @@ export default function ModelsPage() {
             saving={saving}
             promptTemplates={promptTemplates}
             symbols={symbolOptions}
+            onOpenSymbolDrawer={() => setSymbolDrawerOpen(true)}
+            onLoadMarketList={() => loadMarketList()}
           />
+        </div>
+      ) : null}
+
+      {symbolDrawerOpen ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-neutral-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-3xl h-full bg-white shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-200">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-neutral-900">选择交易币种</h3>
+                <p className="text-xs text-neutral-500">
+                  数据来源：Binance 24h ticker，按 24h 交易额排序，可搜索/多选。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSymbolDrawerOpen(false)}
+                className="rounded-full border border-neutral-200 px-3 py-1.5 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="px-6 py-4 space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="search"
+                  value={symbolSearch}
+                  onChange={(e) => {
+                    setSymbolSearch(e.target.value);
+                    loadMarketList({ q: e.target.value });
+                  }}
+                  placeholder="搜索符号，如 BTC / ETH"
+                  className="w-64 rounded-lg border border-neutral-200 px-3 py-2 text-sm focus:border-neutral-400 focus:outline-none"
+                />
+                <select
+                  value={symbolSort}
+                  onChange={(e) => {
+                    setSymbolSort(e.target.value);
+                    loadMarketList({ sort: e.target.value });
+                  }}
+                  className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm focus:border-neutral-400 focus:outline-none"
+                >
+                  <option value="volume">按 24h 交易额</option>
+                  <option value="percent">按 24h 涨跌幅</option>
+                  <option value="price">按价格</option>
+                </select>
+                <div className="text-xs text-neutral-500">
+                  已选 {formState.allowed_symbols?.length ?? 0} 个
+                </div>
+                <div className="ml-auto flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormState((prev) => ({
+                        ...(prev ?? {}),
+                        allowed_symbols: marketList.map((t) => t.base),
+                      }))
+                    }
+                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50"
+                  >
+                    全选当前列表
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormState((prev) => ({ ...(prev ?? {}), allowed_symbols: [] }))
+                    }
+                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50"
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+
+              {marketError ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  {marketError}
+                </div>
+              ) : null}
+              <div className="divide-y divide-gray-100">
+                {marketLoading && !marketList.length ? (
+                  <div className="p-8 text-center text-sm text-gray-500">加载中...</div>
+                ) : null}
+                {marketList.map((ticker, idx) => {
+                  const checked = (formState.allowed_symbols ?? []).includes(ticker.base);
+                  return (
+                    <div
+                      key={`${ticker.symbol}-${idx}`}
+                      onClick={() =>
+                        setFormState((prev) => {
+                          const current = Array.isArray(prev.allowed_symbols)
+                            ? prev.allowed_symbols
+                            : [];
+                          const exists = current.includes(ticker.base);
+                          const next = exists
+                            ? current.filter((s) => s !== ticker.base)
+                            : [...current, ticker.base];
+                          return { ...(prev ?? {}), allowed_symbols: next };
+                        })
+                      }
+                      className="group flex cursor-pointer items-center justify-between px-6 py-4 transition-colors hover:bg-gray-50"
+                    >
+                      <div className="flex items-center gap-4">
+                         <span className="w-6 text-center text-sm font-medium text-gray-400">{idx + 1}</span>
+                         <CoinBadge symbol={ticker.symbol || ticker.base} size={36} />
+                         <div className="flex flex-col">
+                            <span className="text-base font-bold text-gray-900">{ticker.base}</span>
+                            <span className="text-xs font-medium text-gray-500">Vol {Number(ticker.quoteVolume).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                         </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-6 text-right">
+                         <div className="flex w-24 flex-col items-end">
+                            <span className="text-sm font-bold text-gray-900">${Number(ticker.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
+                            <span className="text-xs text-gray-400">Price</span>
+                         </div>
+                         <div className="flex w-20 items-center justify-end">
+                            <span className={clsx(
+                                "rounded-lg px-2.5 py-1 text-xs font-bold",
+                                Number(ticker.changePercent) >= 0 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                            )}>
+                                {Number(ticker.changePercent) > 0 ? "+" : ""}{Number(ticker.changePercent).toFixed(2)}%
+                            </span>
+                         </div>
+                         <div className="flex w-8 justify-end">
+                            {checked ? (
+                                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 shadow-sm transition-transform duration-200 hover:scale-110">
+                                    <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                </div>
+                            ) : (
+                                <div className="h-6 w-6 rounded-full border-2 border-gray-200 transition-colors group-hover:border-gray-300" />
+                            )}
+                         </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {riskModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/40 backdrop-blur-sm px-4">
+          <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b px-5 py-3">
+              <div>
+                <h3 className="text-lg font-semibold text-neutral-900">补充风险分层</h3>
+                <p className="text-xs text-neutral-500">
+                  以下币种缺少风险分层，请填写并保存后再保存模型。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRiskModalOpen(false)}
+                className="rounded-full border border-neutral-200 px-3 py-1.5 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="max-h-[480px] overflow-y-auto px-5 py-4">
+              <table className="w-full text-sm">
+                <thead className="bg-neutral-50 text-xs font-semibold text-neutral-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Symbol</th>
+                    <th className="px-3 py-2 text-left">Notional Cap</th>
+                    <th className="px-3 py-2 text-left">Max Lev</th>
+                    <th className="px-3 py-2 text-left">IMR</th>
+                    <th className="px-3 py-2 text-left">MMR</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {riskDraft.map((row, idx) => (
+                    <tr key={`${row.symbol}-${idx}`}>
+                      <td className="px-3 py-2 font-mono text-xs">{row.symbol}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          className="w-full rounded-lg border border-neutral-200 px-2 py-1 text-sm"
+                          value={row.notional_cap}
+                          onChange={(e) =>
+                            setRiskDraft((prev) => {
+                              const next = [...prev];
+                              next[idx] = { ...next[idx], notional_cap: Number(e.target.value) };
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          className="w-full rounded-lg border border-neutral-200 px-2 py-1 text-sm"
+                          value={row.max_leverage}
+                          onChange={(e) =>
+                            setRiskDraft((prev) => {
+                              const next = [...prev];
+                              next[idx] = { ...next[idx], max_leverage: Number(e.target.value) };
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          step="0.0001"
+                          className="w-full rounded-lg border border-neutral-200 px-2 py-1 text-sm"
+                          value={row.imr}
+                          onChange={(e) =>
+                            setRiskDraft((prev) => {
+                              const next = [...prev];
+                              next[idx] = { ...next[idx], imr: Number(e.target.value) };
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          step="0.0001"
+                          className="w-full rounded-lg border border-neutral-200 px-2 py-1 text-sm"
+                          value={row.mmr}
+                          onChange={(e) =>
+                            setRiskDraft((prev) => {
+                              const next = [...prev];
+                              next[idx] = { ...next[idx], mmr: Number(e.target.value) };
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setRiskModalOpen(false)}
+                className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={riskSaving}
+                onClick={saveRiskDraft}
+                className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-neutral-800 disabled:opacity-60"
+              >
+                {riskSaving ? "保存中..." : "保存风险分层"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

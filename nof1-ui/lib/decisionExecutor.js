@@ -11,6 +11,7 @@ import {
 } from "./dataRepository.js";
 import { logger, logCalcEvent } from "./logManager.js";
 import { getFeeRate, getMarginModeForModel } from "./simConfig.js";
+import { getTrackedSymbols } from "./dataRepository.js";
 import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
 
 export function buildExitPlan(decision = {}) {
@@ -81,6 +82,16 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
   let totalRisk = 0;
   let totalNotional = 0;
   let totalFees = 0;
+  const configuredSymbols = getTrackedSymbols().map((s) =>
+    String(s ?? "").trim().toUpperCase().replace(/USDT$/i, "")
+  );
+  const modelAllowed = Array.isArray(modelConfig?.allowed_symbols)
+    ? modelConfig.allowed_symbols.map((s) =>
+        String(s ?? "").trim().toUpperCase().replace(/USDT$/i, "")
+      )
+    : [];
+  const allowList = modelAllowed.length ? modelAllowed : [];
+  const allowedSymbols = new Set(allowList);
 
   logCalcEvent("decisionExecutor", "decisionSet.begin", {
     model_id: modelId,
@@ -91,6 +102,18 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
   for (const [symbol, decision] of Object.entries(decisions)) {
     const ticker = prices[symbol];
     if (!ticker) continue;
+    const normalizedBase = String(symbol ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/USDT$/i, "");
+    if (!allowedSymbols.has(normalizedBase)) {
+      logCalcEvent("decisionExecutor", "decision.blockedSymbol", {
+        model_id: modelId,
+        symbol,
+        reason: "symbol_not_in_tradable_list",
+      });
+      continue;
+    }
     const marginMode = getMarginModeForModel(modelConfig, symbol);
 
     const price = Number(ticker.price ?? 0);

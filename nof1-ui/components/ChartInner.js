@@ -64,7 +64,7 @@ const SERIES_COLOR_MAP = {
   "icon:zhipu": "rgb(255, 255, 255)",
 };
 
-const BTC_ICON = "/icons/coin/btc.svg";
+const BTC_ICON = "/api/asset-logo?symbol=BTC";
 
 function getSeriesColor(entry) {
   if (entry.isBenchmark || entry.modelId === "btc_benchmark") {

@@ -5,7 +5,7 @@ import useSWR from "swr";
 import CoinBadge from "./CoinBadge";
 
 const fetcher = (url) => fetch(url).then((response) => response.json());
-const DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
+const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT"];
 
 const formatPrice = new Intl.NumberFormat("zh-CN", {
   minimumFractionDigits: 2,
@@ -59,6 +59,7 @@ function usePricePulse(value) {
 
 function TickerItem({ symbol, price }) {
   const numericPrice = Number(price) || 0;
+  const displaySymbol = String(symbol ?? "").toUpperCase();
   const animatedPrice = useAnimatedNumber(numericPrice);
   const pulse = usePricePulse(numericPrice);
   const priceColor =
@@ -92,10 +93,10 @@ function TickerItem({ symbol, price }) {
       }}
     >
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
-        <CoinBadge symbol={symbol} size={24} />
+        <CoinBadge symbol={displaySymbol} size={24} />
       </div>
       <div className="flex flex-col gap-0.5">
-        <span className="text-[11px] font-medium text-neutral-500">{symbol}</span>
+        <span className="text-[11px] font-medium text-neutral-500">{displaySymbol}</span>
         <span
           className={`font-mono text-sm font-semibold transition duration-300 ${priceColor}`}
           aria-live="polite"
@@ -109,17 +110,19 @@ function TickerItem({ symbol, price }) {
 
 export default function TickerBar() {
   const { data } = useSWR("/api/ticker", fetcher, { refreshInterval: 5000 });
+  const { data: symbolsData } = useSWR("/api/symbols", fetcher);
   const tickers = data?.tickers ?? [];
+  const configuredSymbols = symbolsData?.symbols ?? DEFAULT_SYMBOLS;
 
   const entries = useMemo(() => {
     if (tickers.length) {
       return tickers.map((item) => ({
-        symbol: item.symbol,
+        symbol: String(item.symbol ?? "").toUpperCase(),
         price: Number(item.price) || 0,
       }));
     }
-    return DEFAULT_SYMBOLS.map((symbol) => ({ symbol, price: 0 }));
-  }, [tickers]);
+    return configuredSymbols.map((symbol) => ({ symbol: String(symbol).toUpperCase(), price: 0 }));
+  }, [tickers, configuredSymbols]);
 
   return (
     <div className="border-b bg-white/80 backdrop-blur">
@@ -133,4 +136,3 @@ export default function TickerBar() {
     </div>
   );
 }
-

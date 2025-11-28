@@ -4,9 +4,16 @@
   updateBtcBenchmark,
   markToMarketAllModels,
   markModelAutoRun,
+  loadAllModelAllowedSymbols,
+  getTrackedSymbols,
+  initializeBtcBenchmark,
 } from "./dataRepository.js";
 import { runDecisionCycle } from "./decisionEngine.js";
 import { logger } from "./logManager.js";
+import { upsertRiskLimits } from "./simSettingsService.js";
+import { getPool } from "./db.js";
+import crypto from "node:crypto";
+import { importMarketData, syncLatestMarketData } from "./marketImporter.js";
 
 /**
  * ============================================================================
@@ -45,20 +52,31 @@ import { logger } from "./logManager.js";
  * - AUTO_RUNNER_DISABLED: set to "true" to disable both loops entirely
  */
 /** 默认每 5 秒执行一次市场同步和模型调度（可通过环境变量覆盖） */
-const DEFAULT_TICK_MS = Number(process.env.AUTO_RUNNER_TICK_MS ?? 5_000);
-const MARKET_LOOP_INTERVAL_MS = Number(
-  process.env.MARKET_LOOP_INTERVAL_MS ?? 5_000,
-);
+const DEFAULT_TICK_MS = (() => {
+  const value = Number(process.env.AUTO_RUNNER_TICK_MS);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("AUTO_RUNNER_TICK_MS is required (ms).");
+  }
+  return value;
+})();
+const MARKET_LOOP_INTERVAL_MS = (() => {
+  const value = Number(process.env.MARKET_LOOP_INTERVAL_MS);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("MARKET_LOOP_INTERVAL_MS is required (ms).");
+  }
+  return value;
+})();
+const BINANCE_FAPI_BASE = (() => {
+  const base = process.env.BINANCE_FAPI_BASE;
+  if (!base) throw new Error("BINANCE_FAPI_BASE is required.");
+  return base;
+})();
+const API_KEY = process.env.BINANCE_API_KEY;
+const API_SECRET = process.env.BINANCE_API_SECRET;
+const AUTO_SYNC_RISK_MS = 60 * 60 * 1000; // 每 60 分钟后台同步一次分层/资金费
+const HISTORY_SYNC_MS = 60 * 1000; // 每分钟同步一次完整行情快照
 
-/**
- * 全局状态：挂载在 globalThis 上，用来保存自动调度相关的运行时信息。
- *
- * 为什么使用 globalThis？
- * - 在 Next.js 开发模式下，模块可能会被多次加载，如果每次加载都新建一个 setInterval，
- *   会导致出现多个重复的定时器同时运行。
- * - 把状态挂到 globalThis 上，可以确保整个应用生命周期内只存在一个自动运行器实例，
- *   避免重复创建定时器。
- */
+let dispatcherConfigured = false;
 
 const globalState = globalThis.__autoRunner__ ?? {
   started: false,
@@ -72,6 +90,8 @@ const marketLoopState = globalThis.__marketLoop__ ?? {
   started: false,
   timer: null,
   running: false,
+  lastRiskSyncTs: 0,
+  lastHistorySyncTs: 0,
 };
 
 globalThis.__marketLoop__ = marketLoopState;
@@ -85,10 +105,126 @@ export function isModelRunning(modelId) {
   return runningModels.has(modelId);
 }
 
+function ensureMarketSymbol(symbol) {
+  if (!symbol) return symbol;
+  const upper = String(symbol).toUpperCase();
+  return upper.endsWith("USDT") ? upper : `${upper}USDT`;
+}
+
+async function fetchJson(url) {
+  if (!API_KEY || !API_SECRET) {
+    throw new Error("Binance API key/secret missing (BINANCE_API_KEY / BINANCE_API_SECRET).");
+  }
+  if (!dispatcherConfigured) {
+    const proxyUrl =
+      process.env.HTTPS_PROXY ||
+      process.env.HTTP_PROXY ||
+      process.env.http_proxy;
+    try {
+      const { ProxyAgent, setGlobalDispatcher, fetch: undiciFetch } = await import("undici");
+      if (proxyUrl) {
+        setGlobalDispatcher(new ProxyAgent(proxyUrl));
+        globalThis.__binanceFetch__ = undiciFetch;
+      }
+    } catch (err) {
+      console.warn("[autoRunner] proxy setup failed", err?.message);
+    }
+    dispatcherConfigured = true;
+  }
+  const doFetch = async (useProxy) => {
+    if (!useProxy) delete globalThis.__binanceFetch__;
+    const fetchImpl = useProxy && globalThis.__binanceFetch__ ? globalThis.__binanceFetch__ : fetch;
+    const urlObj = new URL(url);
+    urlObj.searchParams.set("timestamp", Date.now().toString());
+    const qs = urlObj.searchParams.toString();
+    const signature = crypto.createHmac("sha256", API_SECRET).update(qs).digest("hex");
+    urlObj.searchParams.set("signature", signature);
+
+    const resp = await fetchImpl(urlObj.toString(), {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (AutoRunner Binance Sync)",
+        "X-MBX-APIKEY": API_KEY,
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`Binance request failed ${resp.status}: ${text || url}`);
+    }
+    return resp.json();
+  };
+  try {
+    return await doFetch(true);
+  } catch (error) {
+    if (String(error?.message || "").includes("fetch failed")) {
+      logger.warn("autoRunner", "proxy fetch failed, retrying without proxy", {
+        error: error?.message,
+      });
+      return await doFetch(false);
+    }
+    throw error;
+  }
+}
+
+async function callInternalApi(path, { method = "POST" } = {}) {
+  const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  const url = new URL(path, base);
+  const resp = await fetch(url.toString(), { method });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Internal API ${path} failed ${resp.status}: ${text || "unknown error"}`);
+  }
+  return resp.json();
+}
+
+async function syncRiskAndFunding(symbols = []) {
+  const targets = symbols.map(ensureMarketSymbol);
+  if (!targets.length) return;
+  const qs = encodeURIComponent(targets.join(","));
+  try {
+    await callInternalApi(`/api/binance/risk?symbols=${qs}`);
+  } catch (error) {
+    logger.warn("autoRunner", "Risk sync via API failed", { error: error?.message });
+  }
+  try {
+    await callInternalApi(`/api/binance/funding?symbols=${qs}`);
+  } catch (error) {
+    logger.warn("autoRunner", "Funding sync via API failed", { error: error?.message });
+  }
+}
+
 async function runMarketSyncCycle() {
   if (marketLoopState.running) return;
   marketLoopState.running = true;
   try {
+    const now = Date.now();
+    await loadAllModelAllowedSymbols();
+    const symbols = getTrackedSymbols();
+
+    if (symbols.length && now - (marketLoopState.lastHistorySyncTs ?? 0) >= HISTORY_SYNC_MS) {
+      try {
+        const syncResult = await syncLatestMarketData(symbols);
+        const minuteInserted = syncResult.reduce(
+          (sum, item) => sum + (item?.minuteInserted ?? 0),
+          0
+        );
+        const htfInserted = syncResult.reduce(
+          (sum, item) => sum + (item?.htfInserted ?? 0),
+          0
+        );
+        logger.info("autoRunner", "Market history synced", {
+          symbols: symbols.length,
+          minute_inserted: minuteInserted,
+          htf_inserted: htfInserted,
+        });
+      } catch (historyError) {
+        logger.warn("autoRunner", "Market history sync failed", {
+          error: historyError?.message,
+        });
+      } finally {
+        marketLoopState.lastHistorySyncTs = now;
+      }
+    }
+
     const updated = await updateMarketPricesFromBinance();
     logger.info("autoRunner", "Market loop refreshed prices", {
       symbols_updated: updated,
@@ -119,6 +255,24 @@ async function runMarketSyncCycle() {
         loop: "market",
       });
     }
+
+    const riskNow = Date.now();
+    if (riskNow - (marketLoopState.lastRiskSyncTs ?? 0) >= AUTO_SYNC_RISK_MS) {
+      marketLoopState.lastRiskSyncTs = riskNow;
+      const symbols = getTrackedSymbols();
+      syncRiskAndFunding(symbols)
+        .then(() =>
+          logger.info("autoRunner", "Risk/Funding auto-synced", {
+            symbols: symbols.length,
+          })
+        )
+        .catch((err) =>
+          logger.warn("autoRunner", "Risk/Funding auto-sync failed", {
+            error: err?.message,
+          })
+        );
+    }
+
   } catch (error) {
     logger.warn("autoRunner", "Market sync loop failed", {
       error: error.message,
@@ -131,10 +285,47 @@ async function runMarketSyncCycle() {
 function ensureMarketLoop() {
   if (marketLoopState.started) return;
   marketLoopState.started = true;
+  const bootstrap = async () => {
+    try {
+      // 初始化基准线模型（直调，避免 fetch 失败）
+      await updateMarketPricesFromBinance();
+      await initializeBtcBenchmark();
+      await updateBtcBenchmark();
+    } catch (err) {
+      logger.warn("autoRunner", "Benchmark init failed", { error: err?.message });
+    }
+    await loadAllModelAllowedSymbols();
+    const symbols = getTrackedSymbols();
+    if (symbols.length) {
+      try {
+        await importMarketData(symbols);
+        logger.info("autoRunner", "Imported historical market data", {
+          symbols: symbols.length,
+        });
+        marketLoopState.lastHistorySyncTs = Date.now();
+      } catch (err) {
+        logger.warn("autoRunner", "Initial market import failed", { error: err?.message });
+      }
+    }
+    // 启动时强制一次风险/资金费同步
+    try {
+      const syncSymbols = getTrackedSymbols().map((s) => s.toUpperCase());
+      if (syncSymbols.length) {
+        await syncRiskAndFunding(syncSymbols);
+        logger.info("autoRunner", "Initial risk/funding synced", {
+          symbols: syncSymbols.length,
+        });
+      }
+    } catch (err) {
+      logger.warn("autoRunner", "Initial risk/funding sync failed", {
+        error: err?.message,
+      });
+    }
+  };
   marketLoopState.timer = setInterval(runMarketSyncCycle, MARKET_LOOP_INTERVAL_MS);
-  runMarketSyncCycle().catch((error) =>
-    console.error("[autoRunner] initial market sync failed", error),
-  );
+  bootstrap()
+    .then(() => runMarketSyncCycle())
+    .catch((error) => console.error("[autoRunner] initial market sync failed", error));
 }
 /**
  * 执行一次自动轮询 tick（自动运行所有开启 auto_run 的模型）。

@@ -247,15 +247,22 @@ export async function runDecisionCycle(modelId, options = {}) {
   if (!model) {
     throw new Error(`Model ${modelId} not found.`);
   }
+  const modelSymbols =
+    Array.isArray(model.allowed_symbols) && model.allowed_symbols.length
+      ? model.allowed_symbols
+      : null;
 
   // ------------------------------------------------------------------------
   // 步骤 2: 构建提示词动态内容
   // ------------------------------------------------------------------------
   // 生成所有占位符的替换值 (市场数据、持仓、账户信息等)
-  const replacements = await buildPromptReplacements(model, options);
+  const replacements = await buildPromptReplacements(model, {
+    ...options,
+    symbols: options.symbols ?? modelSymbols ?? getTrackedSymbols(),
+  });
 
   // 获取需要分析的交易对列表
-  const trackedSymbols = options.symbols ?? getTrackedSymbols();
+  const trackedSymbols = options.symbols ?? modelSymbols ?? getTrackedSymbols();
 
   // 填充提示词模板中的占位符 (如 {market_state_text} → 实际市场数据)
   const systemPrompt = fillTemplate(model.system_prompt, replacements);
