@@ -62,7 +62,9 @@ async function ensureAgentModelSchema() {
   try {
     await pool.query(`
       ALTER TABLE IF EXISTS agent_models
-        ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[]
+        ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[],
+        ADD COLUMN IF NOT EXISTS provider TEXT,
+        ADD COLUMN IF NOT EXISTS llm_model TEXT
     `);
     agentModelSchemaEnsured = true;
   } catch (error) {
@@ -396,6 +398,8 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
   return {
     model_id: row.model_id,
     display_name: row.display_name ?? row.model_id,
+    provider: row.provider ?? null,
+    llm_model: row.llm_model ?? null,
     api_base_url: row.api_base_url ?? "",
     api_key: includeSecrets ? apiKey : "",
     display_icon: row.display_icon ?? DEFAULT_MODEL_ICON,
@@ -951,6 +955,8 @@ export async function createAgentModel(payload) {
   const {
     model_id,
     display_name,
+    provider = null,
+    llm_model = null,
     api_base_url,
     api_key,
     human_review_required = false,
@@ -975,6 +981,8 @@ export async function createAgentModel(payload) {
     INSERT INTO agent_models (
       model_id,
       display_name,
+      provider,
+      llm_model,
       api_base_url,
       api_key,
       human_review_required,
@@ -985,12 +993,14 @@ export async function createAgentModel(payload) {
       margin_config,
       allowed_symbols
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     RETURNING *
     `,
     [
       model_id,
       display_name,
+      provider ?? null,
+      llm_model ?? null,
       api_base_url ?? null,
       api_key ?? null,
       human_review_required,
@@ -1028,6 +1038,8 @@ export async function updateAgentModel(modelId, updates) {
   const pool = getPool();
   const allowed = {
     display_name: "display_name",
+    provider: "provider",
+    llm_model: "llm_model",
     api_base_url: "api_base_url",
     api_key: "api_key",
     human_review_required: "human_review_required",

@@ -287,6 +287,7 @@ export async function runDecisionCycle(modelId, options = {}) {
     provider: model.provider,
     apiKey: model.api_key,
     apiBaseUrl: model.api_base_url,
+    model: model.llm_model,
     systemPrompt,
     userPrompt,
     symbols: trackedSymbols,

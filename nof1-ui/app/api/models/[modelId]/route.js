@@ -226,6 +226,20 @@ export async function PUT(request, context) {
       updates.display_name = displayName;
     }
 
+    if (Object.prototype.hasOwnProperty.call(payload, "provider")) {
+      updates.provider =
+        typeof payload.provider === "string"
+          ? payload.provider.trim() || null
+          : null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "llm_model")) {
+      updates.llm_model =
+        typeof payload.llm_model === "string"
+          ? payload.llm_model.trim() || null
+          : null;
+    }
+
     if (Object.prototype.hasOwnProperty.call(payload, "api_base_url")) {
       updates.api_base_url =
         typeof payload.api_base_url === "string"

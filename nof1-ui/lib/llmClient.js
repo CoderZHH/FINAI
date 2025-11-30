@@ -20,6 +20,7 @@ export async function callLLM({
   apiBaseUrl,
   systemPrompt,
   userPrompt,
+  model,
 }) {
   // ------------------------------------------------------------------------
   // 构建 API 请求 URL 和负载
@@ -28,7 +29,7 @@ export async function callLLM({
   const url = `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
 
   const payload = {
-    model: DEFAULT_MODEL,
+    model: model || DEFAULT_MODEL,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },

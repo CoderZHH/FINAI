@@ -176,6 +176,8 @@ async function ensureSchema(pool) {
     CREATE TABLE agent_models (
       model_id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
+      provider TEXT,
+      llm_model TEXT,
       api_base_url TEXT,
       api_key TEXT,
       human_review_required BOOLEAN DEFAULT FALSE,

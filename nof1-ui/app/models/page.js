@@ -8,43 +8,8 @@ import CoinBadge from "../../components/CoinBadge";
 import {
   DEFAULT_MODEL_ICON,
   MODEL_ICON_CHOICES,
-  CUSTOM_ICON_VALUE,
   resolveModelIcon,
 } from "../../lib/modelIcons";
-
-/** @typedef {"openai"|"deepseek"|"anthropic"|"gemini"|"qwen"|"zhipu"|"moonshot"|"xai_grok"|"doubao"|"minimax"|"wenxin"|"custom"} ProviderId */
-
-/** @type {Array<{id: ProviderId,label: string}>} */
-const PROVIDER_OPTIONS = [
-  { id: "openai", label: "GPT / OpenAI", icon: "icon:gpt" },
-  { id: "deepseek", label: "DeepSeek", icon: "icon:deepseek" },
-  { id: "anthropic", label: "Claude", icon: "icon:claude" },
-  { id: "gemini", label: "Gemini", icon: "icon:gemini" },
-  { id: "qwen", label: "Qwen / Dashscope", icon: "icon:qwen" },
-  { id: "zhipu", label: "GLM / 智谱", icon: "icon:zhipu" },
-  { id: "moonshot", label: "Moonshot", icon: "icon:kimi" },
-  { id: "xai_grok", label: "Grok", icon: "icon:grok" },
-  { id: "doubao", label: "Doubao / 火山", icon: "icon:doubao" },
-  { id: "minimax", label: "MiniMax", icon: "icon:minimax" },
-  { id: "wenxin", label: "Wenxin", icon: "icon:wenxin" },
-  { id: "custom", label: "Custom / 自定义", icon: DEFAULT_MODEL_ICON },
-];
-
-/** @type {Record<ProviderId,string>} */
-const PROVIDER_DEFAULT_BASE_URL = {
-  openai: "https://api.openai.com/v1",
-  deepseek: "https://api.deepseek.com",
-  anthropic: "https://api.anthropic.com",
-  gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
-  qwen: "https://dashscope.aliyuncs.com",
-  zhipu: "https://open.bigmodel.cn/api/paas/v4",
-  moonshot: "https://api.moonshot.ai/v1",
-  xai_grok: "https://api.x.ai/v1",
-  doubao: "https://ark.cn-beijing.volces.com/api/v3",
-  minimax: "https://api.minimax.io/v1",
-  wenxin: "https://api.baidu.com/ernie-bot/v1",
-  custom: "",
-};
 
 const fetcher = async (url) => {
   const response = await fetch(url);
@@ -55,43 +20,6 @@ const fetcher = async (url) => {
 };
 
 const DEFAULT_MARGIN_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"];
-/** @type {ProviderId} */
-const DEFAULT_PROVIDER = "deepseek";
-const PROVIDER_ICON_MAP = PROVIDER_OPTIONS.reduce((acc, option) => {
-  acc[option.id] = option.icon || DEFAULT_MODEL_ICON;
-  return acc;
-}, {});
-
-function inferProviderFromBaseUrl(baseUrl = "") {
-  const normalized = baseUrl.trim().toLowerCase();
-  if (!normalized) return "custom";
-  const match = Object.entries(PROVIDER_DEFAULT_BASE_URL).find(
-    ([, url]) => url && url.trim().toLowerCase() === normalized
-  );
-  return (match?.[0] ?? "custom");
-}
-
-function buildTextIconFromName(name = "") {
-  const trimmed = name.trim().toUpperCase();
-  const char = trimmed ? trimmed[0] : "A";
-  return `text:${char}`;
-}
-
-function getProviderIconValue(providerId, currentIcon, displayName) {
-  if (providerId === "custom") {
-    return buildTextIconFromName(displayName);
-  }
-  return PROVIDER_ICON_MAP[providerId] || DEFAULT_MODEL_ICON;
-}
-
-function resolveDisplayIcon(providerId, displayIcon, displayName) {
-  const provider = providerId || DEFAULT_PROVIDER;
-  // If icon is missing or still the default while provider is not OpenAI, prefer the provider icon.
-  if (!displayIcon || (displayIcon === DEFAULT_MODEL_ICON && provider !== "openai")) {
-    return getProviderIconValue(provider, displayIcon, displayName);
-  }
-  return displayIcon;
-}
 
 const PLACEHOLDER_LIBRARY = [
   {
@@ -136,7 +64,8 @@ const EMPTY_FORM = {
   display_name: "",
   api_base_url: "",
   api_key: "",
-  provider: DEFAULT_PROVIDER,
+  provider: "",
+  llm_model: "",
   system_prompt: "",
   user_prompt: "",
   human_review_required: false,
@@ -779,8 +708,9 @@ function FormModal({
   const selectedTemplate = !missingTemplate
     ? templateOptions.find((tpl) => tpl.id === formState.prompt_template_id)
     : null;
-  const providerValue = formState.provider ?? DEFAULT_PROVIDER;
-  const providerIconValue = getProviderIconValue(providerValue, formState.display_icon, formState.display_name);
+  const iconChoice = formState.display_icon || DEFAULT_MODEL_ICON;
+  const iconPreview = resolveModelIcon(iconChoice);
+  const previewName = formState.display_name?.trim() || "未命名模型";
   const availableSymbols = useMemo(
     () => (symbols.length ? symbols : DEFAULT_MARGIN_SYMBOLS),
     [symbols]
@@ -812,18 +742,6 @@ function FormModal({
     });
   };
 
-  const handleProviderSelect = (providerId) => {
-    const fallback = PROVIDER_DEFAULT_BASE_URL[providerId] ?? "";
-    onChange({
-      ...formState,
-      provider: providerId,
-      api_base_url: fallback,
-      display_icon:
-        providerId === "custom"
-          ? buildTextIconFromName(formState.display_name ?? "")
-          : PROVIDER_ICON_MAP[providerId] || DEFAULT_MODEL_ICON,
-    });
-  };
   const handleBaseUrlChange = (value) => {
     onChange({
       ...formState,
@@ -870,13 +788,19 @@ function FormModal({
   return (
     <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl border border-gray-200 bg-white p-8 shadow-2xl">
       <div className="flex items-start justify-between gap-4 mb-8">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
-            {isEdit ? "编辑模型" : "新增模型"}
-          </h2>
-          <p className="mt-2 text-sm text-gray-500">
-            配置模型连接参数与交易策略
-          </p>
+        <div className="flex items-center gap-3">
+          <ModelAvatar icon={iconPreview.value} size="lg" />
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
+              {previewName}
+            </h2>
+            <p className="mt-1 text-xs font-semibold text-gray-400">
+              {isEdit ? "编辑模型" : "新增模型"}
+            </p>
+            <p className="text-sm text-gray-500">
+              配置模型连接参数与交易策略
+            </p>
+          </div>
         </div>
         <button
           type="button"
@@ -903,45 +827,65 @@ function FormModal({
             </label>
 
             <div className="grid grid-cols-2 gap-4">
-                <label className="block">
-                    <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型提供商</span>
-                    <div className="relative">
-                        <select
-                        value={providerValue}
-                        onChange={(event) => handleProviderSelect(event.target.value)}
-                        className="w-full appearance-none rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
-                        >
-                        {PROVIDER_OPTIONS.map((option) => (
-                            <option key={option.id} value={option.id}>
-                            {option.label}
-                            </option>
-                        ))}
-                        </select>
-                        <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
-                            <ModelAvatar icon={providerIconValue} size="sm" />
-                        </div>
-                    </div>
-                </label>
-                <label className="block">
-                    <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Key</span>
-                    <input
-                        type="password"
-                        value={formState.api_key}
-                        onChange={(event) => handleApiKeyChange(event.target.value)}
-                        className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
-                        placeholder="sk-..."
-                    />
-                </label>
+              <label className="block">
+                <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型提供商</span>
+                <input
+                  value={formState.provider}
+                  onChange={(event) => onChange({ ...formState, provider: event.target.value })}
+                  className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                  placeholder="如：DeepSeek / OpenAI"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型名称</span>
+                <input
+                  value={formState.llm_model}
+                  onChange={(event) => onChange({ ...formState, llm_model: event.target.value })}
+                  className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
+                  placeholder="如：deepseek-reasoner / gpt-4o"
+                />
+              </label>
             </div>
 
             <label className="block">
-                <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Base URL</span>
-                <input
-                    value={formState.api_base_url}
-                    onChange={(event) => handleBaseUrlChange(event.target.value)}
-                    className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
-                    placeholder={PROVIDER_DEFAULT_BASE_URL[providerValue] || "https://..."}
-                />
+              <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Base URL</span>
+              <input
+                value={formState.api_base_url}
+                onChange={(event) => handleBaseUrlChange(event.target.value)}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
+                placeholder="https://api.example.com/v1"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Key</span>
+              <input
+                type="password"
+                value={formState.api_key}
+                onChange={(event) => handleApiKeyChange(event.target.value)}
+                className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                placeholder="sk-..."
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型图标</span>
+              <div className="flex items-center gap-3">
+                <div className="shrink-0">
+                  <ModelAvatar icon={iconPreview.value} size="md" />
+                </div>
+                <select
+                  value={iconChoice}
+                  onChange={(event) => onChange({ ...formState, display_icon: event.target.value })}
+                  className="flex-1 rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
+                >
+                  {MODEL_ICON_CHOICES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </label>
         </div>
 
@@ -1108,19 +1052,10 @@ export default function ModelsPage() {
   const models = useMemo(() => {
     return (data?.models ?? [])
       .filter((model) => model.model_id !== "btc_benchmark")
-      .map((model) => {
-        const inferredProvider = inferProviderFromBaseUrl(model.api_base_url ?? "");
-        const icon =
-          model.display_icon ||
-          (inferredProvider ? getProviderIconValue(inferredProvider, model.display_icon, model.display_name) : null) ||
-          DEFAULT_MODEL_ICON;
-
-        if (model.display_icon === DEFAULT_MODEL_ICON && inferredProvider && inferredProvider !== "openai") {
-          return { ...model, display_icon: getProviderIconValue(inferredProvider, model.display_icon, model.display_name) };
-        }
-
-        return { ...model, display_icon: icon };
-      });
+      .map((model) => ({
+        ...model,
+        display_icon: model.display_icon || DEFAULT_MODEL_ICON,
+      }));
   }, [data]);
 
   const {
@@ -1205,10 +1140,8 @@ export default function ModelsPage() {
     setModalState({ open: true, mode: "create" });
     setFormState({
       ...EMPTY_FORM,
-      api_base_url: PROVIDER_DEFAULT_BASE_URL[DEFAULT_PROVIDER],
-      provider: DEFAULT_PROVIDER,
       margin_config: normalizeMarginConfig(),
-      display_icon: getProviderIconValue(DEFAULT_PROVIDER, DEFAULT_MODEL_ICON, ""),
+      display_icon: DEFAULT_MODEL_ICON,
       allowed_symbols: symbolOptions,
       ...hydrateFormFromTemplate(fallbackTemplateId),
     });
@@ -1241,7 +1174,8 @@ export default function ModelsPage() {
     setFormState({
       display_name: model.display_name ?? "",
       api_base_url: model.api_base_url ?? "",
-      provider: inferProviderFromBaseUrl(model.api_base_url ?? ""),
+      provider: model.provider ?? "",
+      llm_model: model.llm_model ?? "",
       api_key: "",
       human_review_required: Boolean(model.human_review_required),
       auto_run_enabled: Boolean(model.auto_run_enabled),
@@ -1249,13 +1183,7 @@ export default function ModelsPage() {
       prompt_template_id: model.prompt_template_id || defaultTemplateId || "",
       system_prompt: model.system_prompt || "",
       user_prompt: model.user_prompt || "",
-      display_icon:
-        model.display_icon ||
-        getProviderIconValue(
-          inferProviderFromBaseUrl(model.api_base_url ?? ""),
-          DEFAULT_MODEL_ICON,
-          model.display_name
-        ),
+      display_icon: model.display_icon || DEFAULT_MODEL_ICON,
       margin_config: normalizeMarginConfig(model.margin_config || {}),
       allowed_symbols:
         (model.allowed_symbols && model.allowed_symbols.length
@@ -1321,19 +1249,16 @@ export default function ModelsPage() {
       return;
     }
 
-    const resolvedIcon = resolveDisplayIcon(
-      formState.provider ?? DEFAULT_PROVIDER,
-      formState.display_icon,
-      displayName
-    );
-
     const payload = {
       display_name: displayName,
+      provider: formState.provider?.trim() || null,
+      llm_model: formState.llm_model?.trim() || null,
       api_base_url: formState.api_base_url.trim() || null,
+      api_key: formState.api_key?.trim() || null,
       human_review_required: formState.human_review_required,
       auto_run_enabled: formState.auto_run_enabled,
       auto_run_interval_minutes: formState.auto_run_interval_minutes,
-      display_icon: resolvedIcon,
+      display_icon: formState.display_icon || DEFAULT_MODEL_ICON,
       margin_config: normalizeMarginConfig(formState.margin_config || {}),
       allowed_symbols: (() => {
         const cleaned = (formState.allowed_symbols || [])

@@ -76,6 +76,10 @@ export async function POST(request) {
         typeof payload.api_base_url === "string"
           ? payload.api_base_url.trim() || null
           : null,
+      provider:
+        typeof payload.provider === "string" ? payload.provider.trim() || null : null,
+      llm_model:
+        typeof payload.llm_model === "string" ? payload.llm_model.trim() || null : null,
       api_key:
         typeof payload.api_key === "string"
           ? payload.api_key.trim() || null
