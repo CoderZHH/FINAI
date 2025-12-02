@@ -2,10 +2,10 @@
 
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { loadAllModelAllowedSymbols, getTrackedSymbols } from "../../../../lib/dataRepository.js";
-import { listRiskLimits, upsertRiskLimits } from "../../../../lib/simSettingsService.js";
-import { ensureMarketSymbol } from "../../../../lib/symbols.js";
-import { logger } from "../../../../lib/logManager.js";
+import { loadAllModelAllowedSymbols, getTrackedSymbols } from "../../../../lib/data/dataRepository.js";
+import { listRiskLimits, upsertRiskLimits } from "../../../../lib/data/simSettingsService.js";
+import { ensureMarketSymbol } from "../../../../lib/market/symbols.js";
+import { logger } from "../../../../lib/infrastructure/logManager.js";
 
 const BINANCE_USE_TESTNET =
   process.env.BINANCE_TESTNET === "true" || !!process.env.BINANCE_API_KEY_TEST;
@@ -43,7 +43,7 @@ async function configureProxy() {
     try {
       const { ProxyAgent } = await import("undici");
       proxyAgent = new ProxyAgent(proxyUrl);
-      logger.info("api/binance/risk", "Proxy enabled", { proxy: proxyUrl });
+     
     } catch (err) {
       logger.warn("api/binance/risk", "proxy setup failed", { error: err?.message });
     }

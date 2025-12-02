@@ -1,7 +1,8 @@
+import { logger } from "@/lib/infrastructure/logManager";
 import {
   createPromptTemplate,
   listPromptTemplates,
-} from "../../../lib/dataRepository";
+} from "../../../lib/data/dataRepository";
 
 export async function GET(request) {
   const url = new URL(request.url);
@@ -33,7 +34,9 @@ export async function POST(request) {
     });
     return Response.json({ template });
   } catch (error) {
-    console.error("[POST /api/prompt-templates] failed", error);
+    logger.error("api:prompt-templates", "创建模板失败", {
+      error: error?.message,
+    });
     const message = error instanceof Error ? error.message : "Failed to create template";
     return Response.json({ error: message }, { status: 400 });
   }

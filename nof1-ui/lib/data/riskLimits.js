@@ -1,4 +1,4 @@
-import { getPool } from "./db.js";
+import { getPool } from "../infrastructure/db.js";
 
 function normalizeSymbol(symbol) {
   const upper = String(symbol ?? "").trim().toUpperCase();

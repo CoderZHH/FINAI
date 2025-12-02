@@ -1,4 +1,4 @@
-import { getPool } from "./db.js";
+import { getPool } from "../infrastructure/db.js";
 
 const FUND_ROW_ID = 1;
 

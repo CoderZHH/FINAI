@@ -1,4 +1,4 @@
-import { logManager } from "../../../../lib/logManager.js";
+import { logManager, logger } from "../../../../lib/infrastructure/logManager.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +44,10 @@ export async function GET(request) {
           const data = `data: ${JSON.stringify(logEntry)}\n\n`;
           controller.enqueue(encoder.encode(data));
         } catch (err) {
-          console.error("[logStream] 编码日志条目失败:", err);
+          if (cleanup) cleanup();
+          logger.error("api:logs", "编码日志条目失败，已终止订阅", {
+            error: err?.message,
+          });
         }
       });
 
@@ -53,7 +56,10 @@ export async function GET(request) {
         try {
           controller.enqueue(encoder.encode(": heartbeat\n\n"));
         } catch (err) {
-          console.error("[logStream] 发送心跳失败:", err);
+          if (cleanup) cleanup();
+          logger.error("api:logs", "心跳发送失败，已终止订阅", {
+            error: err?.message,
+          });
           clearInterval(heartbeat);
         }
       }, 15000); // 每 15 秒发送心跳

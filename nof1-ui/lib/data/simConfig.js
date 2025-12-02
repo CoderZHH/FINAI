@@ -1,4 +1,5 @@
-import { getPool } from "./db.js";
+import { getPool } from "../infrastructure/db.js";
+import { logger } from "../infrastructure/logManager.js";
 
 const DEFAULT_FEES = { default: { maker: 0.001, taker: 0.001 } };
 
@@ -37,7 +38,7 @@ async function initialize() {
       cachedFees = { ...DEFAULT_FEES };
     }
   } catch (error) {
-    console.error("[simConfig] init failed", error);
+    logger.error("simConfig", "初始化手续费配置失败", { error: error?.message });
     cachedFees = { ...DEFAULT_FEES };
   } finally {
     initialized = true;
@@ -89,7 +90,7 @@ export async function saveSimConfig(nextConfig = {}) {
     );
     cachedFees = fees;
   } catch (error) {
-    console.error("[simConfig] save failed", error);
+    logger.error("simConfig", "保存手续费配置失败", { error: error?.message });
     throw error;
   }
   return { fees };

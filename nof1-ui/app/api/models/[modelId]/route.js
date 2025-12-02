@@ -2,16 +2,55 @@ import {
   deleteAgentModel,
   getAgentModelById,
   updateAgentModel,
-} from "../../../../lib/dataRepository";
+} from "../../../../lib/data/dataRepository";
 import {
   updateMarketPricesFromBinance,
   loadAllModelAllowedSymbols,
-} from "../../../../lib/dataRepository";
-import { isModelRunning } from "../../../../lib/autoRunner";
-import { logger } from "../../../../lib/logManager.js";
-import { upsertRiskLimits } from "../../../../lib/simSettingsService.js";
-import { getPool } from "../../../../lib/db.js";
-import { importMarketData } from "../../../../lib/marketImporter.js";
+} from "../../../../lib/data/dataRepository";
+import { isModelRunning } from "../../../../lib/trading/autoRunner";
+import { logger } from "../../../../lib/infrastructure/logManager.js";
+import { upsertRiskLimits } from "../../../../lib/data/simSettingsService.js";
+import { getPool } from "../../../../lib/infrastructure/db.js";
+import { importMarketData } from "../../../../lib/market/marketImporter.js";
+
+function compactModelResponse(model) {
+  if (!model) return model;
+  const allowed = new Set([
+    "model_id",
+    "display_name",
+    "provider",
+    "llm_model",
+    "api_base_url",
+    "display_icon",
+    "margin_config",
+    "allowed_symbols",
+    "human_review_required",
+    "prompt_template_id",
+    "prompt_template",
+    "auto_run_enabled",
+    "auto_run_interval_minutes",
+    "last_auto_run_at",
+    "next_auto_run_at",
+    "created_at",
+    "updated_at",
+    "has_api_key",
+  ]);
+  const result = {};
+  Object.entries(model).forEach(([key, value]) => {
+    if (!allowed.has(key)) return;
+    if (value === null || value === undefined || value === "") return;
+    result[key] = value;
+  });
+  if (model.prompt_template) {
+    result.prompt_template = {
+      id: model.prompt_template.id,
+      name: model.prompt_template.name,
+      placeholder_tokens: model.prompt_template.placeholder_tokens ?? [],
+      is_default: Boolean(model.prompt_template.is_default),
+    };
+  }
+  return result;
+}
 
 const BINANCE_FAPI_BASE = (() => {
   const base = process.env.BINANCE_FAPI_BASE;
@@ -178,15 +217,15 @@ export async function GET(_request, context) {
   if (!model) {
     return Response.json({ error: "Model not found" }, { status: 404 });
   }
-  return Response.json({ model });
+  return Response.json({ model: compactModelResponse(model) });
 }
 
 export async function PUT(request, context) {
   const modelId = await getModelIdFromContext(context);
   try {
-    logger.info("api/models", "PUT request", { modelId });
+   
     const payload = await request.json();
-    logger.info("api/models", "payload received", payload);
+   
 
     const currentModel = await getAgentModelById(modelId);
     if (!currentModel) {
@@ -198,21 +237,26 @@ export async function PUT(request, context) {
         )
       : [];
     const updates = {};
+    const payloadKeys = Object.keys(payload ?? {});
+    const pauseOnly =
+      payloadKeys.length === 1 &&
+      Object.prototype.hasOwnProperty.call(payload, "auto_run_enabled") &&
+      Boolean(payload.auto_run_enabled) === false;
     const running = isModelRunning(modelId) && Boolean(currentModel.auto_run_enabled);
 
-    // 仅当正在运行且不是“暂停”操作时拒绝更新
-    if (running) {
-      const keys = Object.keys(payload ?? {});
-      const pauseOnly =
-        keys.length === 1 &&
-        Object.prototype.hasOwnProperty.call(payload, "auto_run_enabled") &&
-        Boolean(payload.auto_run_enabled) === false;
-      if (!pauseOnly) {
-        return Response.json(
-          { error: "模型正在运行中，请先点击暂停后再修改配置。" },
-          { status: 400 }
-        );
-      }
+    // 正在运行时必须先暂停
+    if (running && !pauseOnly) {
+      return Response.json(
+        { error: "模型正在运行中，请先点击暂停后再修改配置。" },
+        { status: 400 }
+      );
+    }
+    // 自动运行开启状态下，不允许修改除“暂停”之外的内容
+    if (currentModel.auto_run_enabled && !pauseOnly) {
+      return Response.json(
+        { error: "请先关闭自动运行再修改配置。" },
+        { status: 400 }
+      );
     }
 
     if (Object.prototype.hasOwnProperty.call(payload, "display_name")) {
@@ -335,13 +379,18 @@ export async function PUT(request, context) {
     }
     await loadAllModelAllowedSymbols();
     updateMarketPricesFromBinance().catch(() => {});
-    logger.info("api/models", "update result", model);
     if (!model) {
       return Response.json({ error: "Model not found" }, { status: 404 });
     }
-    return Response.json({ model });
+    const fresh = await getAgentModelById(modelId, { includeSecrets: false });
+    const compact = compactModelResponse(fresh);
+   
+    return Response.json({ model: compact });
   } catch (err) {
-    console.error(`[PUT /api/models/${modelId}] failed`, err);
+    logger.error("api:models", "更新模型失败", {
+      model_id: modelId,
+      error: err?.message,
+    });
     const message =
       err instanceof Error ? err.message : "Failed to update model";
     return Response.json({ error: message }, { status: 400 });

@@ -1,4 +1,4 @@
-import { getAgentLogs } from "../../../../lib/dataRepository";
+import { getAgentLogs } from "../../../../lib/data/dataRepository";
 
 export async function GET(request) {
   const url = new URL(request.url);

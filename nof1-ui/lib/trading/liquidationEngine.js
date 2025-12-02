@@ -1,10 +1,10 @@
-import { getMMR } from "./riskLimits.js";
+import { getMMR } from "../data/riskLimits.js";
 import {
   getInsuranceFundBalance,
   debitInsuranceFund,
   creditInsuranceFund,
-} from "./insuranceFund.js";
-import { logger } from "./logManager.js";
+} from "../data/insuranceFund.js";
+import { logger } from "../infrastructure/logManager.js";
 
 const DEFAULT_RESULT = { action: "hold", details: null };
 
@@ -157,23 +157,9 @@ export async function runLiquidationCheckForAccount(
     (snap) => snap.mode === "isolated" && snap.positionMargin + snap.upnl <= snap.maintenanceMargin
   );
   if (isolatedViolations.length) {
-    logger.info("liquidationEngine.branch", {
-      model_id: accountRuntime.model_id,
-      mode: "isolated",
-      positions_count: isolatedViolations.length,
-    });
+   
     const details = await forceLiquidateIsolated(isolatedViolations, accountRuntime);
-    logger.info("liquidationEngine.runLiquidationCheckForAccount", {
-      model_id: accountRuntime.model_id,
-      margin_mode: "isolated",
-      equity: walletBalance + totalUnrealized,
-      totalMM: null,
-      requiredLoss: details.requiredLoss,
-      coveredByUserMargin: details.coveredByUserMargin,
-      coveredByInsurance: details.coveredByInsurance,
-      adlLoss: details.adlLoss,
-      positions_count: positions.length,
-    });
+   
     return {
       action: "liquidate_isolated",
       details,
@@ -185,23 +171,9 @@ export async function runLiquidationCheckForAccount(
     const totalMM = crossPositions.reduce((sum, snap) => sum + snap.maintenanceMargin, 0);
     const equity = walletBalance + totalUnrealized;
     if (equity <= totalMM) {
-      logger.info("liquidationEngine.branch", {
-        model_id: accountRuntime.model_id,
-        mode: "cross",
-        positions_count: crossPositions.length,
-      });
+     
       const details = await forceLiquidateCross(accountRuntime, crossPositions, markFetcher, totalMM);
-      logger.info("liquidationEngine.runLiquidationCheckForAccount", {
-        model_id: accountRuntime.model_id,
-        margin_mode: "cross",
-        equity,
-        totalMM,
-        requiredLoss: details.requiredLoss,
-        coveredByUserMargin: details.coveredByUserMargin,
-        coveredByInsurance: details.coveredByInsurance,
-        adlLoss: details.adlLoss,
-        positions_count: positions.length,
-      });
+     
       return {
         action: "liquidate_cross",
         details,

@@ -1,4 +1,5 @@
 ﻿import { Pool } from "pg";
+import { logger } from "./logManager.js";
 
 let cachedPool = null;
 
@@ -19,7 +20,7 @@ export function getPool() {
     });
 
     cachedPool.on("error", (err) => {
-      console.error("[PostgreSQL] unexpected error", err);
+      logger.error("db", "PostgreSQL 连接异常", { error: err?.message });
     });
   }
 

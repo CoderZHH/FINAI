@@ -1,5 +1,5 @@
-import { getPool } from "./db.js";
-import { logger } from "./logManager.js";
+import { getPool } from "../infrastructure/db.js";
+import { logger } from "../infrastructure/logManager.js";
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -26,7 +26,7 @@ export async function distributeAdlLoss(adlLoss) {
   const lossTarget = toNumber(adlLoss);
   if (!(lossTarget > 0)) {
     const emptyResult = { distributed: 0, affected: [] };
-    logger.info("adlEngine.distributeAdlLoss", {
+    logger.info("adlEngine", "分摊 ADL 损失 - 无需处理", {
       adlLossInput: adlLoss,
       distributed: 0,
       remaining: lossTarget,
@@ -97,7 +97,7 @@ export async function distributeAdlLoss(adlLoss) {
 
   const distributed = lossTarget - remaining;
   const result = { distributed, affected };
-  logger.info("adlEngine.distributeAdlLoss", {
+  logger.info("adlEngine", "分摊 ADL 损失完成", {
     adlLossInput: adlLoss,
     distributed,
     remaining: lossTarget - distributed,

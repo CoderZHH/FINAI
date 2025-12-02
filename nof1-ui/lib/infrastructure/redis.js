@@ -1,4 +1,5 @@
 ﻿import Redis from "ioredis";
+import { logger } from "./logManager.js";
 
 let cachedClient = null;
 
@@ -18,7 +19,7 @@ export function getRedis() {
     });
 
     cachedClient.on("error", (err) => {
-      console.error("[Redis] unexpected error", err);
+      logger.error("redis", "连接异常", { error: err?.message });
     });
   }
 

@@ -4,9 +4,11 @@ import {
   listAgentModels,
   loadAllModelAllowedSymbols,
   updateMarketPricesFromBinance,
-} from "../../../lib/dataRepository";
-import { ensureAutoRunner } from "../../../lib/autoRunner";
-import { importMarketData } from "../../../lib/marketImporter.js";
+} from "../../../lib/data/dataRepository";
+import { ensureAutoRunner } from "../../../lib/trading/autoRunner";
+import { importMarketData, syncLatestMarketData } from "../../../lib/market/marketImporter.js";
+import { getLatestMarketHistoryTimestamp } from "../../../lib/data/dataRepository.js";
+import { logger } from "@/lib/infrastructure/logManager";
 
 ensureAutoRunner();
 
@@ -46,6 +48,45 @@ function normalizeAllowedSymbolsInput(input) {
   return Array.from(new Set(cleaned));
 }
 
+function compactModelResponse(model) {
+  if (!model) return model;
+  const allowed = new Set([
+    "model_id",
+    "display_name",
+    "provider",
+    "llm_model",
+    "api_base_url",
+    "display_icon",
+    "margin_config",
+    "allowed_symbols",
+    "human_review_required",
+    "prompt_template_id",
+    "prompt_template",
+    "auto_run_enabled",
+    "auto_run_interval_minutes",
+    "last_auto_run_at",
+    "next_auto_run_at",
+    "created_at",
+    "updated_at",
+    "has_api_key",
+  ]);
+  const result = {};
+  Object.entries(model).forEach(([key, value]) => {
+    if (!allowed.has(key)) return;
+    if (value === null || value === undefined || value === "") return;
+    result[key] = value;
+  });
+  if (model.prompt_template) {
+    result.prompt_template = {
+      id: model.prompt_template.id,
+      name: model.prompt_template.name,
+      placeholder_tokens: model.prompt_template.placeholder_tokens ?? [],
+      is_default: Boolean(model.prompt_template.is_default),
+    };
+  }
+  return result;
+}
+
 export async function GET(request) {
   const url = new URL(request.url);
   const includeSecrets = url.searchParams.get("includeSecrets") === "true";
@@ -56,7 +97,7 @@ export async function GET(request) {
     includeSecrets,
   });
 
-  return Response.json({ models });
+  return Response.json({ models: models.map(compactModelResponse) });
 }
 
 export async function POST(request) {
@@ -104,21 +145,37 @@ export async function POST(request) {
     }
 
     const model = await createAgentModel(cleanPayload);
-    // 冷启动：导入历史行情并同步风险/资金费
+    // 冷启动：导入历史行情并同步风险/资金费（已有历史则只补增量）
     try {
-      await importMarketData(cleanPayload.allowed_symbols);
+      const symbols = cleanPayload.allowed_symbols;
+      const symbolsNeedingFull = [];
+      const symbolsNeedingSync = [];
+      for (const sym of symbols) {
+        const lastTs = await getLatestMarketHistoryTimestamp(sym, "1m");
+        if (lastTs) {
+          symbolsNeedingSync.push(sym);
+        } else {
+          symbolsNeedingFull.push(sym);
+        }
+      }
+      if (symbolsNeedingFull.length) {
+        await importMarketData(symbolsNeedingFull);
+      }
+      if (symbolsNeedingSync.length) {
+        await syncLatestMarketData(symbolsNeedingSync);
+      }
       const symbolParam = encodeURIComponent(cleanPayload.allowed_symbols.join(","));
       await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/risk?symbols=${symbolParam}`, { method: "POST" });
       await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/funding?symbols=${symbolParam}`, { method: "POST" });
     } catch (seedErr) {
-      console.warn("[POST /api/models] seed failed", seedErr?.message);
+      logger.warn("api:models", "冷启动行情/风险同步失败", { error: seedErr?.message });
     }
     await loadAllModelAllowedSymbols();
     // 尝试刷新行情以覆盖新符号
     updateMarketPricesFromBinance().catch(() => {});
-    return Response.json({ model });
+    return Response.json({ model: compactModelResponse(model) });
   } catch (err) {
-    console.error("[POST /api/models] failed", err);
+    logger.error("api:models", "创建模型失败", { error: err?.message });
     const message =
       err instanceof Error ? err.message : "Failed to create model";
     return Response.json({ error: message }, { status: 400 });

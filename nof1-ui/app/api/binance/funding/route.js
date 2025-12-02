@@ -1,10 +1,10 @@
 "use server";
 
 import { NextResponse } from "next/server";
-import { loadAllModelAllowedSymbols, getTrackedSymbols } from "../../../../lib/dataRepository.js";
-import { getPool } from "../../../../lib/db.js";
-import { logger } from "../../../../lib/logManager.js";
-import { ensureMarketSymbol } from "../../../../lib/symbols.js";
+import { loadAllModelAllowedSymbols, getTrackedSymbols } from "../../../../lib/data/dataRepository.js";
+import { getPool } from "../../../../lib/infrastructure/db.js";
+import { logger } from "../../../../lib/infrastructure/logManager.js";
+import { ensureMarketSymbol } from "../../../../lib/market/symbols.js";
 import crypto from "node:crypto";
 
 const BINANCE_FAPI_BASE = (() => {

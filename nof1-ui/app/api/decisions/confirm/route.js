@@ -1,9 +1,37 @@
 import {
   getPendingDecisionById,
-  insertAgentLog,
   updatePendingDecisionStatus,
-} from "../../../../lib/dataRepository";
-import { applyDecisionSet } from "../../../../lib/decisionExecutor";
+} from "../../../../lib/data/dataRepository";
+import { applyDecisionSet } from "../../../../lib/trading/decisionExecutor";
+import { ensureMarketSymbol } from "../../../../lib/market/symbols";
+
+function normalizeDecisionInput(raw) {
+  if (!raw) return {};
+  if (Array.isArray(raw)) {
+    return raw.reduce((acc, entry) => {
+      const sym =
+        entry?.symbol ||
+        entry?.coin ||
+        entry?.asset ||
+        entry?.ticker ||
+        entry?.pair;
+      const normalized = sym ? ensureMarketSymbol(sym).replace(/USDT$/i, "") : null;
+      if (!normalized) {
+        throw new Error("edited_decisions 缺少 symbol/coin 字段");
+      }
+      acc[normalized] = { ...entry, symbol: normalized };
+      return acc;
+    }, {});
+  }
+  if (typeof raw === "object") {
+    return Object.entries(raw).reduce((acc, [key, value]) => {
+      const normalized = ensureMarketSymbol(key).replace(/USDT$/i, "");
+      acc[normalized] = { ...(value ?? {}), symbol: normalized };
+      return acc;
+    }, {});
+  }
+  throw new Error("edited_decisions 必须是对象或数组");
+}
 
 export async function POST(request) {
   const payload = await request.json();
@@ -27,26 +55,19 @@ export async function POST(request) {
 
   if (action === "reject") {
     const updated = await updatePendingDecisionStatus(decisionId, "rejected", {
+      public_message: "Human reviewer rejected pending decision.",
+      cot_trace_summary: "Decision rejected.",
       reasoning_content: reasoningContent,
       response_json: responseJson,
       decision_blob: pending.decision_blob,
     });
-    await insertAgentLog(
-      pending.model_id,
-      "Human reviewer rejected pending decision.",
-      "Decision rejected.",
-      {
-        prompt_text: promptText,
-        response_text: responseText,
-        response_json: responseJson,
-        cycle_id: cycleId,
-        reasoning_content: reasoningContent,
-      }
-    );
     return Response.json({ ok: true, decision: updated });
   }
 
-  const decisions = pending.decision_blob?.decisions ?? pending.decision_blob ?? {};
+  let decisions = pending.decision_blob?.decisions ?? pending.decision_blob ?? {};
+  if (payload?.edited_decisions) {
+    decisions = normalizeDecisionInput(payload.edited_decisions);
+  }
   const result = await applyDecisionSet(pending.model_id, decisions, {
     decisionSource: "ai_proposed_human_approved",
     cycleId,
@@ -56,22 +77,10 @@ export async function POST(request) {
     public_message: "Human reviewer approved decision and positions were updated.",
     cot_trace_summary: `Approved ${result.executed} trades; risk ${result.totalRisk.toFixed(2)} USD.`,
     account_value_snapshot: result.account?.latest_equity ?? null,
-    response_json: responseJson,
-    decision_blob: pending.decision_blob,
+    response_json: payload?.edited_decisions ?? responseJson,
+    decision_blob: { ...(pending.decision_blob ?? {}), decisions },
     reasoning_content: reasoningContent,
   });
-  await insertAgentLog(
-    pending.model_id,
-    "Human reviewer approved decision and positions were updated.",
-    `Approved ${result.executed} trades; risk ${result.totalRisk.toFixed(2)} USD.`,
-        {
-          prompt_text: promptText,
-          response_text: responseText,
-          response_json: responseJson,
-          cycle_id: cycleId,
-          reasoning_content: reasoningContent,
-        }
-      );
 
   return Response.json({
     ok: true,

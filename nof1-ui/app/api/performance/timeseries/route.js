@@ -1,5 +1,5 @@
-import { getPerformanceTimeseries } from "../../../../lib/dataRepository";
-import { ensureAutoRunner } from "../../../../lib/autoRunner";
+import { getPerformanceTimeseries } from "../../../../lib/data/dataRepository";
+import { ensureAutoRunner } from "../../../../lib/trading/autoRunner";
 
 export async function GET() {
   ensureAutoRunner();

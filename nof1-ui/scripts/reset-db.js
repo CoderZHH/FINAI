@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadEnvFromFile } from "./utils/loadEnv.js";
-import { logger } from "../lib/logManager.js";
+import { logger } from "../lib/infrastructure/logManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +20,7 @@ async function importModule(relativePath) {
 }
 
 async function getPool() {
-  const { getPool } = await importModule("../lib/db.js");
+  const { getPool } = await importModule("../lib/infrastructure/db.js");
   return getPool();
 }
 
@@ -30,7 +30,8 @@ async function loadPromptFile(filename) {
     const content = await fs.readFile(filePath, "utf8");
     return content.trim();
   } catch (error) {
-    console.warn(`[reset-db] 无法读取 ${filename}，使用空字符串。`, error.message);
+    // 日志输出改为 warn，避免直接 console
+    logger.warn(LOG_MODULE, `[reset-db] 无法读取 ${filename}，使用空字符串。`, { error: error.message });
     return "";
   }
 }
@@ -56,7 +57,7 @@ async function seedDefaultPromptTemplate(pool) {
   const userPrompt = await loadPromptFile("模板字符串.md");
 
   if (!systemPrompt || !userPrompt) {
-    console.warn("[reset-db] 默认提示词文件为空，跳过默认模板创建。");
+    logger.warn(LOG_MODULE, "[reset-db] 默认提示词文件为空，跳过默认模板创建。");
     return null;
   }
 
@@ -438,7 +439,7 @@ const isMainModule =
 
 if (isMainModule) {
   main().catch((err) => {
-    console.error("Reset failed:", err);
+    logger.error(LOG_MODULE, "Reset failed", { error: err?.message });
     process.exitCode = 1;
   });
 }

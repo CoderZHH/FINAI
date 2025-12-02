@@ -1,8 +1,9 @@
+import { logger } from "@/lib/infrastructure/logManager";
 import {
   deletePromptTemplate,
   getPromptTemplateById,
   updatePromptTemplate,
-} from "../../../../lib/dataRepository";
+} from "../../../../lib/data/dataRepository";
 
 async function getTemplateId(context) {
   if (!context) return undefined;
@@ -32,7 +33,10 @@ export async function PUT(request, context) {
     const template = await updatePromptTemplate(templateId, payload ?? {});
     return Response.json({ template });
   } catch (error) {
-    console.error(`[PUT /api/prompt-templates/${templateId}] failed`, error);
+    logger.error("api:prompt-templates", "更新模板失败", {
+      template_id: templateId,
+      error: error?.message,
+    });
     const message = error instanceof Error ? error.message : "Failed to update template";
     return Response.json({ error: message }, { status: 400 });
   }
@@ -47,7 +51,10 @@ export async function DELETE(_request, context) {
     await deletePromptTemplate(templateId);
     return Response.json({ ok: true });
   } catch (error) {
-    console.error(`[DELETE /api/prompt-templates/${templateId}] failed`, error);
+    logger.error("api:prompt-templates", "删除模板失败", {
+      template_id: templateId,
+      error: error?.message,
+    });
     const message = error instanceof Error ? error.message : "Failed to delete template";
     return Response.json({ error: message }, { status: 400 });
   }

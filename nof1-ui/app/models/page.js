@@ -9,7 +9,8 @@ import {
   DEFAULT_MODEL_ICON,
   MODEL_ICON_CHOICES,
   resolveModelIcon,
-} from "../../lib/modelIcons";
+} from "../../lib/llm/modelIcons";
+import { logger } from "../../lib/infrastructure/logManager";
 
 const fetcher = async (url) => {
   const response = await fetch(url);
@@ -64,7 +65,7 @@ const EMPTY_FORM = {
   display_name: "",
   api_base_url: "",
   api_key: "",
-  provider: "",
+  provider: "deepseek",
   llm_model: "",
   system_prompt: "",
   user_prompt: "",
@@ -84,7 +85,7 @@ function formatDate(timestamp) {
     if (Number.isNaN(value.getTime())) return "尚未更新";
     return value.toLocaleString("zh-CN");
   } catch (err) {
-    console.warn("Failed to format date", err);
+    logger.warn("modelsPage", "日期格式化失败", { error: err?.message });
     return "尚未更新";
   }
 }
@@ -598,7 +599,12 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
     : "尚未执行";
   const nextRunLabel = model.auto_run_enabled
     ? model.next_auto_run_at
-      ? relativeTimeLabel(model.next_auto_run_at)
+      ? (() => {
+          const nextTs = new Date(model.next_auto_run_at).getTime();
+          return nextTs <= Date.now()
+            ? "即将调度"
+            : relativeTimeLabel(model.next_auto_run_at);
+        })()
       : "正在排队"
     : "自动运行已关闭";
   const lastRunTitle = model.last_auto_run_at ? formatDate(model.last_auto_run_at) : "";
@@ -720,6 +726,41 @@ function FormModal({
       ? formState.allowed_symbols
       : availableSymbols;
 
+  // 根据提供商获取默认模型和 Base URL 的提示文本
+  const getProviderDefaults = (provider) => {
+    const providers = {
+      deepseek: {
+        modelPlaceholder: "deepseek-reasoner / deepseek-chat",
+        baseUrlPlaceholder: "https://api.deepseek.com/v1",
+        defaultBaseUrl: "https://api.deepseek.com/v1",
+      },
+      openai: {
+        modelPlaceholder: "gpt-4-turbo-preview / gpt-4o / gpt-3.5-turbo",
+        baseUrlPlaceholder: "https://api.openai.com/v1",
+        defaultBaseUrl: "https://api.openai.com/v1",
+      },
+      anthropic: {
+        modelPlaceholder: "claude-3-5-sonnet-20241022 / claude-3-opus-20240229",
+        baseUrlPlaceholder: "https://api.anthropic.com",
+        defaultBaseUrl: "https://api.anthropic.com",
+      },
+      google: {
+        modelPlaceholder: "gemini-1.5-pro / gemini-1.5-flash",
+        baseUrlPlaceholder: "（Google 使用 SDK，无需配置）",
+        defaultBaseUrl: "",
+      },
+      xai: {
+        modelPlaceholder: "grok-beta / grok-2",
+        baseUrlPlaceholder: "https://api.x.ai/v1",
+        defaultBaseUrl: "https://api.x.ai/v1",
+      },
+    };
+    return providers[provider] || providers.deepseek;
+  };
+
+  const currentProvider = formState.provider || "deepseek";
+  const providerDefaults = getProviderDefaults(currentProvider);
+
   useEffect(() => {
     if (selectedTemplate) {
       onChange((prev) => ({
@@ -829,12 +870,17 @@ function FormModal({
             <div className="grid grid-cols-2 gap-4">
               <label className="block">
                 <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型提供商</span>
-                <input
-                  value={formState.provider}
+                <select
+                  value={formState.provider || "deepseek"}
                   onChange={(event) => onChange({ ...formState, provider: event.target.value })}
                   className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors"
-                  placeholder="如：DeepSeek / OpenAI"
-                />
+                >
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="google">Google (Gemini)</option>
+                  <option value="xai">XAI (Grok)</option>
+                </select>
               </label>
               <label className="block">
                 <span className="text-sm font-medium text-gray-700 mb-1.5 block">模型名称</span>
@@ -842,18 +888,24 @@ function FormModal({
                   value={formState.llm_model}
                   onChange={(event) => onChange({ ...formState, llm_model: event.target.value })}
                   className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
-                  placeholder="如：deepseek-reasoner / gpt-4o"
+                  placeholder={providerDefaults.modelPlaceholder}
                 />
               </label>
             </div>
 
             <label className="block">
-              <span className="text-sm font-medium text-gray-700 mb-1.5 block">API Base URL</span>
+              <span className="text-sm font-medium text-gray-700 mb-1.5 block">
+                API Base URL
+                {currentProvider === "google" && (
+                  <span className="ml-2 text-xs text-gray-500">（可选）</span>
+                )}
+              </span>
               <input
                 value={formState.api_base_url}
                 onChange={(event) => handleBaseUrlChange(event.target.value)}
                 className="w-full rounded-xl border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:bg-white focus:ring-blue-500 transition-colors font-mono text-xs"
-                placeholder="https://api.example.com/v1"
+                placeholder={providerDefaults.baseUrlPlaceholder}
+                disabled={currentProvider === "google"}
               />
             </label>
 
@@ -1166,7 +1218,7 @@ export default function ModelsPage() {
   const openEdit = (model) => {
     if (!model?.model_id || typeof model.model_id !== "string") {
       setErrorMessage("模型数据异常，无法编辑");
-      console.error("无效的 model_id:", model?.model_id);
+      logger.error("modelsPage", "无效的模型 ID", { model_id: model?.model_id });
       return;
     }
 

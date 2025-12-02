@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { logger } from "../lib/logManager.js";
+import { logger } from "../lib/infrastructure/logManager.js";
 
 /**
  * LogConsole 组件

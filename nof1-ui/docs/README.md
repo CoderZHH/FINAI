@@ -61,13 +61,13 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
     - 分区：全局费率（maker/taker/资金费）、风险分级表（币种、名义区间、IMR、MMR、最大杠杆）、保证金模式切换。  
   - `app/api/*` Route Handlers：models、decisions、trades、positions、chart/performance、logs 等数据出口。  
   - `app/api/sim-config`：统一返回手续费、资金费率、风险分级，前后端共享。  
-- 实时行情与基准 (lib/dataRepository.js, app/api/benchmark, ticker, symbols)  
+- 实时行情与基准 (lib/data/dataRepository.js, app/api/benchmark, ticker, symbols)  
   - 轮询 Binance futures 价格 -> `market_prices`。  
   - BTC Benchmark 初始化/更新，供折线图对比。  
 - 模型与提示词 (app/api/models, prompt-templates, proposals)  
   - 模型 CRUD 与自动运行调度；支持人工审核的决策提案。  
   - 提示词模板库，模型绑定模板并下发占位符。  
-- 决策执行链路 (lib/autoRunner.js, decisionExecutor.js, markToMarket.js)  
+- 决策执行链路 (lib/trading/autoRunner.js, decisionExecutor.js, markToMarket.js)  
   - 市场循环 1s：刷新价格、跑 MTM、追加账户时间序列。  
   - 调度循环 5s：按间隔触发 LLM 决策；支持暂停/恢复。  
   - 决策执行：写 `trades`，释放/占用保证金，落 runtime 账户，记录日志。  
@@ -82,7 +82,7 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
   - runtime 账户：`wallet_balance`、`position_margin`、`available_cash`、`starting_equity`。  
   - 时间序列：每次 MTM/成交后写入，驱动折线图。  
   - trades：记录开仓/平仓、fee、pnl、止盈止损、杠杆。  
-- 设置与种子 (lib/simConfig.js, simSettingsService.js, scripts/reset-db.js)  
+- 设置与种子 (lib/data/simConfig.js, simSettingsService.js, scripts/reset-db.js)  
   - `sim_settings`：手续费、资金费率、保证金模式，来自设置页。  
   - `risk_limits`：币种分级风控参数，设置页维护，reset-db 提供默认种子。  
   - reset-db：全量重建 schema、提示词模板、sim_settings、risk_limits、基准数据。  

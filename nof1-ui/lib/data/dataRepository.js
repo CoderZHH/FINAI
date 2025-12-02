@@ -1,16 +1,16 @@
-import { getPool } from "./db.js";
-import { getRedis } from "./redis.js";
+import { getPool } from "../infrastructure/db.js";
+import { getRedis } from "../infrastructure/redis.js";
 import { getFeeRate } from "./simConfig.js";
-import { runLiquidationCheckForAccount } from "./liquidationEngine.js";
-import { distributeAdlLoss } from "./adlEngine.js";
+import { runLiquidationCheckForAccount } from "../trading/liquidationEngine.js";
+import { distributeAdlLoss } from "../trading/adlEngine.js";
 import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
-import { logger, logCalcEvent } from "./logManager.js";
+import { logger, logCalcEvent } from "../infrastructure/logManager.js";
 import {
   ensureMarketSymbol,
   normalizeSymbol,
   parseSeedSymbols,
   getDefaultSeedSymbols,
-} from "./symbols.js";
+} from "../market/symbols.js";
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -51,7 +51,9 @@ async function ensurePromptTemplateSchema() {
     `);
     promptTemplateSchemaEnsured = true;
   } catch (error) {
-    console.error("[dataRepository] ensurePromptTemplateSchema failed", error);
+    logger.error("dataRepository", "确保 prompt_templates 表结构失败", {
+      error: error?.message,
+    });
     throw error;
   }
 }
@@ -68,7 +70,9 @@ async function ensureAgentModelSchema() {
     `);
     agentModelSchemaEnsured = true;
   } catch (error) {
-    console.error("[dataRepository] ensureAgentModelSchema failed", error);
+    logger.error("dataRepository", "确保 agent_models 表结构失败", {
+      error: error?.message,
+    });
     throw error;
   }
 }
@@ -293,7 +297,9 @@ async function fetchRedisTickers(symbols) {
   try {
     return await redis.mget(redisKeys);
   } catch (error) {
-    console.warn("[market] Redis ticker fetch failed, falling back to DB prices.", error);
+    logger.warn("market", "Redis 行情获取失败，回退到数据库价格", {
+      error: error?.message,
+    });
     return new Array(symbols.length).fill(null);
   }
 }
@@ -341,7 +347,7 @@ function hydrateTickerFromRedis(redisPayload, symbol) {
       timestamp: parsed.lastUpdateTs ?? Date.now(),
     };
   } catch (err) {
-    console.warn("Failed to parse redis ticker payload", err);
+    logger.warn("market", "Redis 行情解析失败", { error: err?.message });
     return null;
   }
 }
@@ -501,10 +507,12 @@ function mapAccountRow(row) {
   };
 }
 
-export async function getMarketSnapshot() {
+export async function getMarketSnapshot(targetSymbols = null) {
   const pool = getPool();
   await loadAllModelAllowedSymbols();
-  const trackedSymbols = getTrackedSymbols(); // base symbols
+  const trackedSymbols = targetSymbols && targetSymbols.length
+    ? targetSymbols.map(normalizeSymbol)
+    : getTrackedSymbols(); // base symbols
   const marketSymbols = trackedSymbols.map((s) => ensureMarketSymbol(s));
 
   if (!marketSymbols.length) {
@@ -636,7 +644,7 @@ export async function updateBtcBenchmark() {
           : 0,
     };
   } catch (error) {
-    console.error("BTC benchmark update failed:", error);
+    logger.error("benchmark", "BTC 基准权益更新失败", { error: error?.message });
     throw error;
   }
 }
@@ -1100,9 +1108,7 @@ export async function updateAgentModel(modelId, updates) {
   });
 
   if (!fields.length) {
-    logger.info("dataRepository", "updateAgentModel no fields changed", {
-      modelId,
-    });
+    logger.info("dataRepository", "模型配置未变更，跳过更新", { model_id: modelId });
     return getAgentModelById(modelId);
   }
 
@@ -1110,10 +1116,10 @@ export async function updateAgentModel(modelId, updates) {
 
   values.push(modelId);
 
-  logger.info("dataRepository", "updateAgentModel query", {
-    modelId,
+  logger.info("dataRepository", "更新模型 SQL 构建完成", {
+    model_id: modelId,
     fields,
-    values,
+    values_preview: values.map((v) => (v instanceof Date ? v.toISOString() : v)),
   });
 
   const { rows } = await pool.query(
@@ -1126,7 +1132,10 @@ export async function updateAgentModel(modelId, updates) {
     values
   );
 
-  logger.info("dataRepository", "updateAgentModel rows", rows);
+  logger.info("dataRepository", "模型更新结果", {
+    model_id: modelId,
+    affected: rows.length,
+  });
 
   if (!rows.length) return null;
   await loadAllModelAllowedSymbols();
@@ -1731,7 +1740,7 @@ export async function markToMarketAllModels() {
             const adlResult = await distributeAdlLoss(adlLoss);
             logCalcEvent("adlEngine", "adl.distributed", adlResult);
           } catch (adlError) {
-            logger.error("adlEngine", "ADL distribution failed", {
+            logger.error("adlEngine", "ADL 分摊失败", {
               model_id: account.model_id,
               error: adlError?.message,
             });
@@ -1739,7 +1748,7 @@ export async function markToMarketAllModels() {
         }
       }
     } catch (error) {
-      console.error("[liquidation] execution failed", {
+      logger.error("liquidation", "强平执行失败", {
         model_id: account.model_id,
         error: error?.message,
       });
@@ -1858,7 +1867,7 @@ export async function getRecentTrades(limit = 20) {
     }));
   } catch (error) {
     if (error?.code === "42P01") {
-      console.warn("[dataRepository] trades表缺失，返回空列表。");
+      logger.warn("dataRepository", "trades 表不存在，返回空列表");
       return [];
     }
     throw error;
@@ -2268,7 +2277,7 @@ export async function appendAccountTimeseries(entry) {
       ]
     );
   } catch (error) {
-    logger.error("timeseries.append", "Failed to insert account timeseries", {
+    logger.error("timeseries.append", "写入账户时间序列失败", {
       payload,
       error: error?.message,
     });
@@ -2920,13 +2929,13 @@ export async function updateMarketPricesFromBinance() {
       updated++;
     }
 
-    logger.info("dataRepository", "[updateMarketPricesFromBinance] Updated symbols", {
+    logger.info("dataRepository", "行情价格更新完成", {
       updated,
       tracked: symbols.length,
     });
     return updated;
   } catch (error) {
-    console.error("Market price update failed:", error.message);
+    logger.error("market", "行情价格更新失败", { error: error?.message });
     return 0;
   }
 }
@@ -3099,7 +3108,7 @@ export async function initializeBtcBenchmark() {
     };
   } catch (error) {
     await client.query("ROLLBACK");
-    console.error("BTC benchmark initialization failed:", error);
+    logger.error("benchmark", "BTC 基准初始化失败", { error: error?.message });
     throw error;
   } finally {
     client.release();

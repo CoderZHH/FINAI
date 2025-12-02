@@ -54,18 +54,24 @@ function addLog(level, module, message, data = null) {
   }
 
   // 同时输出到控制台 (开发环境)
-  const consoleMethod = level === "error" ? "error" : level === "warn" ? "warn" : "log";
-  console[consoleMethod](
-    `[${level.toUpperCase()}] [${module}] ${normalizedMessage}`,
-    normalizedData || ""
-  );
+  // 控制台输出已禁用，避免污染终端
 
   // 通知所有订阅者 (SSE)
   subscribers.forEach((callback) => {
     try {
       callback(logEntry);
     } catch (err) {
-      console.error("[logManager] 通知订阅者失败:", err);
+      const errorEntry = {
+        timestamp: new Date().toISOString(),
+        level: LogLevel.ERROR,
+        module: "logManager",
+        message: "订阅者回调异常",
+        data: safeSerialize(err?.message ?? err),
+      };
+      logBuffer.push(errorEntry);
+      if (logBuffer.length > MAX_LOGS) {
+        logBuffer.shift();
+      }
     }
   });
 }

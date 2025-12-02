@@ -39,7 +39,7 @@ nof1-ui/
     decisionEngine.js Prompt 构造 + LLM 调用 + 决策解析
     decisionExecutor.js 交易执行/风险校验/账户更新
     dataRepository.js 数据访问与聚合（行情、账户、模型、风险）
-    llmClient.js      LLM HTTP 客户端
+    llmClient.ts      LangChain LLM 客户端（TypeScript）
   scripts/reset-db.js 重建 schema + 默认模板/设置
   prompts/            默认模板（系统/用户/示例）
 ```

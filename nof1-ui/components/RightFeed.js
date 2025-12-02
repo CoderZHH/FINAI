@@ -2,12 +2,233 @@
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+import clsx from "classnames";
 import CoinBadge from "./CoinBadge";
-import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/modelIcons";
+import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/llm/modelIcons";
+import dynamic from "next/dynamic";
 
 const fetcher = (url) => fetch(url).then((response) => response.json());
 
 const BASELINE_MODEL_ID = "btc_benchmark";
+const ChartInner = dynamic(() => import("./ChartInner"), { ssr: false });
+
+function PendingCard({ entry, iconMap, onAction }) {
+  const [expanded, setExpanded] = useState(false);
+  const [editText, setEditText] = useState(() => {
+    const src =
+      entry.decision_blob?.decisions ??
+      entry.decision_blob?.response_json ??
+      entry.response_json ??
+      entry.decision_blob ??
+      {};
+    try {
+      return JSON.stringify(src, null, 2);
+    } catch {
+      return "";
+    }
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const promptText = entry.decision_blob?.prompt_text ?? entry.prompt_text ?? "";
+  const decisions =
+    entry.decision_blob?.decision_list ??
+    entry.decision_blob?.decisions ??
+    entry.response_json ??
+    [];
+  const timestampLabel = entry.created_at
+    ? new Date(entry.created_at).toLocaleString("zh-CN")
+    : "未记录时间";
+  const reasoningText =
+    entry.reasoning_content ??
+    entry.decision_blob?.reasoning ??
+    entry.cot_trace_summary ??
+    "";
+
+  const handleAction = async (action) => {
+    try {
+      setSubmitting(true);
+      setError("");
+      const body = { decision_id: entry.id, action };
+      if (action === "approve" && editText?.trim()) {
+        body.edited_decisions = JSON.parse(editText);
+      }
+      const resp = await fetch("/api/decisions/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.error) {
+        throw new Error(data?.error || "提交失败");
+      }
+      onAction?.();
+    } catch (err) {
+      setError(err?.message || "提交失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="group relative overflow-hidden rounded-3xl border border-white/60 bg-white/60 p-5 shadow-xl shadow-gray-200/40 backdrop-blur-xl transition-all hover:bg-white/80">
+      {/* Header Section */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <ModelBadge modelId={entry.model_id} icon={iconMap?.[entry.model_id]} />
+          <div>
+            <div className="font-bold text-gray-900">{humanizeModel(entry.model_id)}</div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                待人工审核
+              </span>
+              <span className="text-[10px] text-gray-400">{timestampLabel}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Decision Preview Cards */}
+      {Array.isArray(decisions) && decisions.length > 0 && (
+        <div className="mt-4 grid gap-3">
+          {decisions.map((decision, idx) => {
+            const coin = (decision.coin || decision.symbol || `#${idx + 1}`).toUpperCase();
+            const qty = formatQuantity(decision.quantity ?? decision.size);
+            const leverage = decision.leverage != null ? `${decision.leverage}x` : EMPTY_VALUE;
+            const signal = (decision.signal || decision.action || "—").toUpperCase();
+            const justification = decision.justification ?? decision.reason ?? "";
+            
+            const isBuy = signal.includes("BUY") || signal.includes("LONG");
+            const isSell = signal.includes("SELL") || signal.includes("SHORT");
+            const signalColor = isBuy ? "text-emerald-600 bg-emerald-50" : isSell ? "text-rose-600 bg-rose-50" : "text-gray-600 bg-gray-50";
+
+            return (
+              <div
+                key={`${coin}-${idx}`}
+                className="relative overflow-hidden rounded-2xl border border-gray-100 bg-white/50 p-3 transition-colors hover:bg-white"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CoinBadge symbol={coin} size={20} />
+                    <span className="font-bold text-gray-900">{coin}</span>
+                  </div>
+                  <span className={clsx("rounded-lg px-2 py-1 text-[10px] font-bold", signalColor)}>
+                    {signal}
+                  </span>
+                </div>
+                
+                <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
+                  <div className="flex flex-col">
+                    <span className="text-gray-400">数量</span>
+                    <span className="font-medium text-gray-700">{qty}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-gray-400">杠杆</span>
+                    <span className="font-medium text-gray-700">{leverage}</span>
+                  </div>
+                  {decision.risk_usd != null && (
+                    <div className="flex flex-col">
+                      <span className="text-gray-400">风险</span>
+                      <span className="font-medium text-gray-700">{formatCurrency(decision.risk_usd)}</span>
+                    </div>
+                  )}
+                </div>
+
+                {justification && (
+                  <div className="mt-2 border-t border-gray-100 pt-2">
+                    <p className="text-[10px] leading-relaxed text-gray-500 line-clamp-2">
+                      {justification}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Action Bar */}
+      <div className="mt-5 flex items-center justify-between gap-3 border-t border-gray-100/50 pt-4">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[11px] font-medium text-gray-500 transition-colors hover:text-gray-900"
+        >
+          {expanded ? "收起详情" : "查看详情"}
+        </button>
+        
+        <div className="flex items-center gap-2">
+          {error && <span className="text-[10px] text-rose-500 animate-pulse">{error}</span>}
+          <button
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-[11px] font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:border-gray-300 active:scale-95 disabled:opacity-50"
+            onClick={() => handleAction("reject")}
+            disabled={submitting}
+          >
+            拒绝
+          </button>
+          <button
+            className="rounded-xl bg-gray-900 px-4 py-2 text-[11px] font-semibold text-white shadow-lg shadow-gray-200 transition-all hover:bg-black hover:-translate-y-0.5 active:scale-95 disabled:opacity-50"
+            onClick={() => handleAction("approve")}
+            disabled={submitting}
+          >
+            {submitting ? "提交中..." : "批准执行"}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded Details */}
+      {expanded && (
+        <div className="mt-4 space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
+          {promptText && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">用户提示词</div>
+              <div className="max-h-40 overflow-y-auto rounded-xl bg-gray-50/50 p-3 text-[11px] text-gray-600 font-mono leading-relaxed border border-gray-100">
+                {promptText}
+              </div>
+            </div>
+          )}
+          
+          {reasoningText && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">思考过程</div>
+              <div className="max-h-60 overflow-y-auto rounded-xl bg-amber-50/30 p-3 text-[11px] text-gray-700 font-mono leading-relaxed border border-amber-100/50">
+                {reasoningText}
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">编辑 JSON</div>
+            <div className="relative overflow-hidden rounded-xl border border-gray-200 bg-white">
+              <div className="flex items-center border-b border-gray-100 bg-gray-50/50 px-3 py-2">
+                <div className="flex gap-1.5">
+                  <div className="h-2.5 w-2.5 rounded-full bg-red-400/20"></div>
+                  <div className="h-2.5 w-2.5 rounded-full bg-amber-400/20"></div>
+                  <div className="h-2.5 w-2.5 rounded-full bg-green-400/20"></div>
+                </div>
+                <span className="ml-3 text-[10px] font-medium text-gray-400">decisions.json</span>
+              </div>
+              <div className="flex">
+                <div className="w-8 flex-shrink-0 select-none border-r border-gray-100 bg-gray-50/30 py-3 text-center font-mono text-[10px] text-gray-300">
+                  {editText.split('\n').map((_, i) => (
+                    <div key={i} className="leading-relaxed">{i + 1}</div>
+                  ))}
+                </div>
+                <textarea
+                  className="h-48 w-full resize-none border-0 bg-transparent p-3 font-mono text-[11px] leading-relaxed text-gray-600 focus:ring-0 outline-none"
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 const TAB_CONFIG = [
   { key: "positions", label: "持仓概览" },
@@ -276,21 +497,6 @@ function DecisionPanel() {
     refreshInterval: 8000,
   });
   const pending = data?.decisions ?? [];
-  const [submitting, setSubmitting] = useState(null);
-
-  const handleAction = async (id, action) => {
-    setSubmitting(`${id}:${action}`);
-    try {
-      await fetch("/api/decisions/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision_id: id, action }),
-      });
-      await mutate();
-    } finally {
-      setSubmitting(null);
-    }
-  };
 
   if (!pending.length) {
     return <div className="text-xs text-neutral-500">暂无需要人工确认的提案</div>;
@@ -298,98 +504,14 @@ function DecisionPanel() {
 
   return (
     <div className="space-y-3">
-      {pending.map((decision) => {
-        const entries = Object.entries(decision.decision_blob?.decisions ?? {}).filter(([, value]) => value);
-        const reasoning =
-          decision.decision_blob?.reasoning ??
-          decision.decision_blob?.raw?.choices?.[0]?.message?.reasoning_content ??
-          decision.decision_blob?.response_json?.choices?.[0]?.message?.reasoning_content ??
-          "";
-        const promptText = decision.decision_blob?.prompt_text ?? "";
-        const responseText = decision.decision_blob?.response_text ?? "";
-        const isFallback = decision.decision_blob?.is_fallback ?? false;
-
-        return (
-          <div key={decision.id} className="rounded border px-3 py-2 text-[12px] space-y-2">
-            <div className="flex items-center justify-between text-[11px] text-neutral-500">
-              <span>{decision.model_name ?? humanizeModel(decision.model_id)}</span>
-              <span>{new Date(decision.inserted_at).toLocaleString("zh-CN")}</span>
-            </div>
-
-            {reasoning && (
-              <div className="text-[11px] text-neutral-700 whitespace-pre-wrap leading-relaxed">{reasoning}</div>
-            )}
-
-            {isFallback && (
-              <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
-                ⚠️ 当前策略使用了占位或回退结果，请在执行前仔细检查。
-              </div>
-            )}
-
-            <div className="overflow-x-auto">
-              <table className="mt-1 w-full border text-[11px] text-neutral-600">
-                <thead className="bg-neutral-100">
-                  <tr>
-                    <th className="px-2 py-1 text-left">币种</th>
-                    <th className="px-2 py-1 text-left">信号</th>
-                    <th className="px-2 py-1 text-left">数量</th>
-                    <th className="px-2 py-1 text-left">杠杆</th>
-                    <th className="px-2 py-1 text-left">止盈</th>
-                    <th className="px-2 py-1 text-left">止损</th>
-                    <th className="px-2 py-1 text-left">风险估算</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map(([symbol, value]) => (
-                    <tr key={symbol} className="border-t">
-                      <td className="px-2 py-1 font-medium text-neutral-800">{symbol}</td>
-                      <td className="px-2 py-1 uppercase">{value.signal}</td>
-                      <td className="px-2 py-1">{formatQuantity(value.quantity)}</td>
-                      <td className="px-2 py-1">{value.leverage ?? 1}x</td>
-                      <td className="px-2 py-1">{value.profit_target ?? EMPTY_VALUE}</td>
-                      <td className="px-2 py-1">{value.stop_loss ?? EMPTY_VALUE}</td>
-                      <td className="px-2 py-1">
-                        {value.risk_usd != null ? formatCurrency(value.risk_usd) : EMPTY_VALUE}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {promptText && (
-              <details className="rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]">
-                <summary className="cursor-pointer font-semibold text-neutral-600">查看提示词 / 响应</summary>
-                <div className="mt-1">
-                  <div className="text-neutral-500">提示词：</div>
-                  <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{promptText}</pre>
-                </div>
-                <div className="mt-2">
-                  <div className="text-neutral-500">模型回复：</div>
-                  <pre className="mt-1 whitespace-pre-wrap text-neutral-700">{responseText}</pre>
-                </div>
-              </details>
-            )}
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleAction(decision.id, "approve")}
-                className="rounded bg-neutral-900 px-3 py-1 text-xs font-semibold text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:bg-neutral-400"
-                disabled={submitting === `${decision.id}:approve`}
-              >
-                {submitting === `${decision.id}:approve` ? "确认中..." : "确认执行"}
-              </button>
-              <button
-                onClick={() => handleAction(decision.id, "reject")}
-                className="rounded border border-neutral-300 px-3 py-1 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-400"
-                disabled={submitting === `${decision.id}:reject`}
-              >
-                {submitting === `${decision.id}:reject` ? "拒绝中..." : "拒绝提案"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      {pending.map((entry) => (
+        <PendingCard
+          key={entry.id ?? `${entry.model_id}-${entry.timestamp}`}
+          entry={entry}
+          iconMap={{}}
+          onAction={() => mutate()}
+        />
+      ))}
     </div>
   );
 }

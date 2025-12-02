@@ -1,6 +1,7 @@
 "use server";
 
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/infrastructure/logManager";
 
 const BINANCE_API_BASE = process.env.BINANCE_API_BASE ?? "https://api.binance.com";
 const BINANCE_24H_URL = `${BINANCE_API_BASE}/api/v3/ticker/24hr`;
@@ -75,7 +76,7 @@ export async function GET(request) {
     const limited = Number.isFinite(limit) && limit > 0 ? sorted.slice(0, limit) : sorted;
     return NextResponse.json({ tickers: limited });
   } catch (error) {
-    console.error("[api/markets/binance] failed", error);
+    logger.error("api:markets", "Binance 行情接口失败", { error: error?.message });
     return NextResponse.json(
       { error: "Binance 数据获取失败，无数据返回" },
       { status: 502 }

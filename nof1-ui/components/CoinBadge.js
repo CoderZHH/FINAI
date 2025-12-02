@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { logger } from "@/lib/logManager";
+import { logger } from "@/lib/infrastructure/logManager";
 
 function normalizeSymbol(symbol = "") {
   // 移除 USDT 后缀并转换为大写

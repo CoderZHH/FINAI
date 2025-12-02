@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
-import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/modelIcons";
+import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/llm/modelIcons";
 import CoinBadge from "./CoinBadge";
 
 /** 关闭 SSR 的图表组件 */
@@ -178,14 +178,38 @@ function deriveLegend(seriesMeta, iconLookup) {
 }
 
 /** 下方卡片 */
-function deriveCards(models) {
+function deriveCards(models, seriesMeta) {
+  const latestByModel = new Map();
+  (seriesMeta ?? []).forEach((series) => {
+    const latestPoint = series.points?.at(-1) ?? {};
+    latestByModel.set(series.model_id, {
+      latestDollar: Number(latestPoint.dollar_equity ?? 0),
+      pnlPct: Number(latestPoint.cum_pnl_pct ?? 0),
+    });
+  });
+
   return (models ?? [])
     .filter((model) => model.model_id !== BASELINE_MODEL_ID)
     .map((model) => {
-      const latest = Number(model.latest_equity ?? 0);
-      const starting = Number(model.starting_equity ?? 10000);
+      const seriesEntry = latestByModel.get(model.model_id);
+      if (!seriesEntry) {
+        throw new Error(
+          `模型 ${model.model_id} 缺少时间序列数据，无法计算盈亏。请检查 /api/performance/timeseries 是否返回该模型。`
+        );
+      }
+
+      const latest = Number(seriesEntry.latestDollar ?? NaN);
+      const pctFromSeries = Number(seriesEntry.pnlPct ?? NaN);
+      if (!Number.isFinite(latest) || !Number.isFinite(pctFromSeries)) {
+        throw new Error(
+          `模型 ${model.model_id} 时间序列数据异常，无法计算盈亏。`
+        );
+      }
+
+      // 通过累计收益率反推起始权益
+      const starting = latest / (1 + pctFromSeries);
       const pnlAbs = latest - starting;
-      const pnlPct = starting ? pnlAbs / starting : 0;
+      const pnlPct = pctFromSeries;
 
       return {
         modelId: model.model_id,
@@ -274,8 +298,9 @@ export default function ChartPanel() {
           ...model,
           display_icon: resolveIconForModel(model),
         })),
+        seriesMeta,
       ),
-    [modelsData],
+    [modelsData, seriesMeta],
   );
 
   const nameLookup = useMemo(() => {

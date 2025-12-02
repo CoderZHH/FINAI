@@ -1,4 +1,4 @@
-import { getSinceInceptionValues } from "../../../../lib/dataRepository";
+import { getSinceInceptionValues } from "../../../../lib/data/dataRepository";
 
 export async function GET() {
   const sinceInceptionValues = await getSinceInceptionValues();

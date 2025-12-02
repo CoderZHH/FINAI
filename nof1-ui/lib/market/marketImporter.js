@@ -1,13 +1,13 @@
 "use server";
 
 import { EMA, MACD, RSI, ATR, SMA } from "technicalindicators";
-import { logger } from "./logManager.js";
+import { logger } from "../infrastructure/logManager.js";
 import { ensureMarketSymbol } from "./symbols.js";
 import {
   insertMarketPriceSnapshot,
   upsertMarketPrice,
   getLatestMarketHistoryTimestamp,
-} from "./dataRepository.js";
+} from "../data/dataRepository.js";
 
 const LOG_MODULE = "marketImporter";
 const BINANCE_FAPI_BASE = (() => {
@@ -50,9 +50,9 @@ async function configureProxy() {
       const { ProxyAgent, fetch: undiciFetch } = await import("undici");
       proxyAgent = new ProxyAgent(proxyUrl);
       fetchImpl = undiciFetch;
-      logger.info(LOG_MODULE, "Proxy enabled for market import", { proxy: proxyUrl });
+      // proxy enabled (info suppressed)
     } catch (err) {
-      logger.warn(LOG_MODULE, "Proxy setup failed", { error: err?.message });
+      logger.warn(LOG_MODULE, "代理配置失败", { error: err?.message });
     }
   }
   if (!fetchImpl) {
@@ -120,7 +120,7 @@ async function fetchJSON(url, description, attempt = 1, { useProxy = true } = {}
     }
     if (attempt >= MAX_RETRY) throw error;
     const delay = 500 * attempt;
-    logger.warn(LOG_MODULE, `${description} retry ${attempt} in ${delay}ms`, {
+    logger.warn(LOG_MODULE, `${description} 第 ${attempt} 次重试，${delay}ms 后再试`, {
       error: error?.message,
     });
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -403,7 +403,7 @@ async function persistSymbolData({
   existingHtfTs = null,
 }) {
   if (!minuteCandles.length) {
-    logger.warn(LOG_MODULE, `Skip ${symbol}: no minute candles.`);
+    logger.warn(LOG_MODULE, `跳过 ${symbol}: 无 1m 数据`);
     return { symbol, minuteInserted: 0, htfInserted: 0 };
   }
 
@@ -461,7 +461,7 @@ async function syncSymbol({
       startTime: oiStart,
       endTime: endMs + OPEN_INTEREST_PAD_MS,
     }).catch((error) => {
-      logger.warn(LOG_MODULE, `${symbol} open interest history failed`, { error: error?.message });
+      logger.warn(LOG_MODULE, `${symbol} 持仓量历史拉取失败`, { error: error?.message });
       return [];
     }),
     fetchFundingRateSeries({
@@ -469,7 +469,7 @@ async function syncSymbol({
       startTime: fundingStart,
       endTime: endMs + FUNDING_PAD_MS,
     }).catch((error) => {
-      logger.warn(LOG_MODULE, `${symbol} funding history failed`, { error: error?.message });
+      logger.warn(LOG_MODULE, `${symbol} 资金费历史拉取失败`, { error: error?.message });
       return [];
     }),
   ]);
@@ -512,7 +512,7 @@ export async function importMarketData(symbols = [], options = {}) {
       });
       results.push({ ...outcome, startMs: resolvedStart, endMs: resolvedEnd });
     } catch (error) {
-      logger.warn(LOG_MODULE, "import failed", { symbol, error: error?.message });
+      logger.warn(LOG_MODULE, "行情导入失败", { symbol, error: error?.message });
       results.push({ symbol, error: error?.message });
     }
   }
@@ -559,7 +559,7 @@ export async function syncLatestMarketData(symbols = [], options = {}) {
       });
       results.push({ ...outcome, endMs });
     } catch (error) {
-      logger.warn(LOG_MODULE, "sync failed", { symbol, error: error?.message });
+      logger.warn(LOG_MODULE, "行情同步失败", { symbol, error: error?.message });
       results.push({ symbol, error: error?.message });
     }
   }

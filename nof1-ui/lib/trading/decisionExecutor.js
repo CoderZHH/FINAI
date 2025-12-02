@@ -8,11 +8,11 @@ import {
   insertTrade,
   summarizeMarginAccount,
   upsertRuntimeAccount,
-} from "./dataRepository.js";
-import { logger, logCalcEvent } from "./logManager.js";
-import { getFeeRate, getMarginModeForModel } from "./simConfig.js";
-import { getTrackedSymbols } from "./dataRepository.js";
-import { getIMR, getMMR, getMaxLeverage } from "./riskLimits.js";
+} from "../data/dataRepository.js";
+import { logger, logCalcEvent } from "../infrastructure/logManager.js";
+import { getFeeRate, getMarginModeForModel } from "../data/simConfig.js";
+import { getTrackedSymbols } from "../data/dataRepository.js";
+import { getIMR, getMMR, getMaxLeverage } from "../data/riskLimits.js";
 
 export function buildExitPlan(decision = {}) {
   return {
@@ -196,7 +196,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
     const requestedLeverage = Number.isFinite(leverage) && leverage > 0 ? leverage : 1;
     const baseNotional = Math.abs(price * quantity);
     if (!Number.isFinite(baseNotional) || baseNotional <= 0) {
-      logger.warn("decisionExecutor", "Skipped trade due to invalid notional", {
+      logger.warn("decisionExecutor", "无效名义金额，跳过开仓", {
         model_id: modelId,
         symbol,
         price,
@@ -223,7 +223,7 @@ export async function applyDecisionSet(modelId, decisions, options = {}) {
         : positionMargin;
     const availableBalanceBefore = walletBalance - lockedForSymbol;
     if (availableBalanceBefore < marginRequired) {
-      logger.warn("decisionExecutor", "Insufficient available balance for margin", {
+      logger.warn("decisionExecutor", "可用保证金不足，跳过开仓", {
         model_id: modelId,
         symbol,
         available_balance: availableBalanceBefore,

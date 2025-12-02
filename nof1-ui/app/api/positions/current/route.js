@@ -1,4 +1,4 @@
-import { getPositionsSnapshot } from "../../../../lib/dataRepository";
+import { getPositionsSnapshot } from "../../../../lib/data/dataRepository";
 
 export async function GET() {
   const accountTotals = await getPositionsSnapshot();

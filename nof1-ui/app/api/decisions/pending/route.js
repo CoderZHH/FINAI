@@ -1,4 +1,4 @@
-import { getPendingDecisions } from "../../../../lib/dataRepository";
+import { getPendingDecisions } from "../../../../lib/data/dataRepository";
 
 export async function GET() {
   const decisions = await getPendingDecisions();

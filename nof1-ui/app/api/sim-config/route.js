@@ -1,6 +1,7 @@
 "use server";
 
-import { loadSimConfig, saveSimConfig } from "../../../lib/simConfig.js";
+import { loadSimConfig, saveSimConfig } from "../../../lib/data/simConfig.js";
+import { logger } from "@/lib/infrastructure/logManager";
 
 function normalizeFeeSection(rawFees = {}) {
   const normalizeEntry = (entry, label) => {
@@ -43,7 +44,7 @@ export async function PUT(request) {
     const merged = await saveSimConfig({ fees });
     return Response.json(merged);
   } catch (error) {
-    console.error("[api/sim-config] update failed", error);
+    logger.error("api:sim-config", "模拟配置更新失败", { error: error?.message });
     return Response.json(
       { error: error?.message ?? "Failed to update sim config" },
       { status: 400 }

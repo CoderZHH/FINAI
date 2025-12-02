@@ -40,7 +40,7 @@ import {
   getRuntimeAccount,
   getTrackedSymbols,
   normalizeSymbol,
-} from "./dataRepository.js";
+} from "../data/dataRepository.js";
 
 // ============================================================================
 // 常量配置
@@ -242,8 +242,8 @@ function formatMarketSection(symbol, snapshot, minuteSeries, htfSeries) {
  */
 export async function buildMarketStateText(symbols = getTrackedSymbols()) {
   const symbolList = Array.from(new Set(symbols.map((s) => normalizeSymbol(s))));
-  // 获取所有交易对的最新快照
-  const snapshot = await getMarketSnapshot();
+  // 获取所有交易对的最新快照（仅限当前符号）
+  const snapshot = await getMarketSnapshot(symbolList);
   
   // 并行加载每个交易对的时序数据和格式化
   const sections = await Promise.all(
@@ -456,5 +456,6 @@ export async function buildPromptReplacements(model, options = {}) {
       account?.latest_equity ?? account?.starting_equity ?? 10000, 
       2
     ), // 账户总价值 (2 位小数)
+    allowed_symbols: Array.from(new Set(symbols.map(normalizeSymbol))).join(", "),
   };
 }

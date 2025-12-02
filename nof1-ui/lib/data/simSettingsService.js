@@ -1,5 +1,5 @@
-import { getPool } from "./db.js";
-import { logger } from "./logManager.js";
+import { getPool } from "../infrastructure/db.js";
+import { logger } from "../infrastructure/logManager.js";
 
 export async function listRiskLimits() {
   const pool = getPool();
@@ -45,6 +45,6 @@ export async function upsertRiskLimits(entries = []) {
       ]
     );
   }
-  logger.info("simSettings", "risk_limits updated", { count: entries.length });
+  logger.info("simSettings", "风险分层已更新", { count: entries.length });
   return listRiskLimits();
 }

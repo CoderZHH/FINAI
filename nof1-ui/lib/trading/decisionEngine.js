@@ -31,11 +31,11 @@ import {
   insertAgentLog,
   markModelAutoRun,
   updatePendingDecisionStatus,
-} from "./dataRepository.js";
-import { buildPromptReplacements } from "./promptBuilder.js";
-import { callLLM } from "./llmClient.js";
+} from "../data/dataRepository.js";
+import { buildPromptReplacements } from "../llm/promptBuilder.js";
+import { callLLM } from "../llm/llmClient";
 import { applyDecisionSet } from "./decisionExecutor.js";
-import { logger } from "./logManager.js";
+import { logger } from "../infrastructure/logManager.js";
 
 // ============================================================================
 // 工具函数
@@ -118,7 +118,7 @@ function parseDecisionEntries(payload) {
     try {
       raw = JSON.parse(raw);
     } catch (error) {
-      logger.warn("decisionEngine", "LLM decisions JSON parse failed", { error: error.message });
+      logger.warn("decisionEngine", "LLM 返回 JSON 解析失败", { error: error.message });
       raw = null;
     }
   }
@@ -294,11 +294,8 @@ export async function runDecisionCycle(modelId, options = {}) {
   });
 
   const durationMs = Date.now() - cycleStartedAt; // 计算耗时
-  const reasoningContent =
-    llmResult.reasoning ??
-    llmResult.raw?.choices?.[0]?.message?.reasoning_content ??
-    null;
-  logger.info(`⏱️  请求耗时: ${durationMs}ms\n`);
+  const reasoningContent = llmResult.reasoning ?? null;
+  logger.info("decisionEngine", "LLM 请求耗时", { duration_ms: durationMs, cycle_id: cycleId });
 
   // 如果在请求途中被用户暂停，直接丢弃响应，避免在 UI 中“拒收之后返回的 LLM 请求”
   if (source === "auto_cycle") {
@@ -321,7 +318,7 @@ export async function runDecisionCycle(modelId, options = {}) {
   // 步骤 4: 解析和规范化决策数据d
   // ------------------------------------------------------------------------
   const parsedPayload = llmResult.decisions;
-  logger.info('parsedPayload', parsedPayload);
+  logger.info("decisionEngine", "解析决策 payload", { payload: parsedPayload, cycle_id: cycleId });
 
   const { entries: decisionList, map: decisionsMap } = normalizeDecisionMap(parsedPayload);
 
@@ -381,21 +378,6 @@ export async function runDecisionCycle(modelId, options = {}) {
   // ------------------------------------------------------------------------
   if (model.human_review_required) {
     // ========== 分支 A: 需要人工审核 ==========
-    // 记录到审核队列
-    await insertAgentLog(
-      model.model_id,
-      "Auto decision pending human review.",
-      "Decision enqueued for approval.",
-      {
-        prompt_text: userPrompt,
-        response_text: serializedResponse,
-        response_json: llmResult.decisions,
-        decisions: decisionsMap,
-        cycle_id: cycleId,
-        reasoning_content: reasoningContent,
-      }
-    );
-
     // 更新模型下次运行时间
     await markModelAutoRun(model.model_id, {
       intervalMinutes: model.auto_run_interval_minutes ?? 5,

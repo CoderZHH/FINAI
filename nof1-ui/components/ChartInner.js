@@ -22,7 +22,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
-import { resolveModelIcon, normaliseIconValue } from "../lib/modelIcons";
+import { resolveModelIcon, normaliseIconValue } from "../lib/llm/modelIcons";
 
 /**
  * 默认数值格式化器：将数值格式化为中文千分位格式，保留2位小数
