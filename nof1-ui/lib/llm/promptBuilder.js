@@ -17,7 +17,7 @@
  * 提示词模板示例:
  *   系统提示词: "你是专业的量化交易分析师..."
  *   用户提示词: "当前时间: {current_time}\n市场数据:\n{market_state_text}\n持仓信息:\n{position_state_text}"
- *   
+ *   market_state_text
  *   替换后:
  *   "当前时间: 2025-11-09T10:30:00.000Z
  *    市场数据:
@@ -418,11 +418,14 @@ export async function buildPromptReplacements(model, options = {}) {
   // ------------------------------------------------------------------------
   const now = new Date();
   const symbols =
-    options.symbols && options.symbols.length
+    (options.symbols && options.symbols.length
       ? options.symbols
-      : Array.isArray(model.allowed_symbols) && model.allowed_symbols.length
+      : Array.isArray(model.allowed_symbols)
         ? model.allowed_symbols
-        : getTrackedSymbols();
+        : []) ?? [];
+  if (!symbols.length) {
+    throw new Error(`模型 ${model.model_id} 缺少 allowed_symbols，无法构建提示词。`);
+  }
   
   // 并行加载所有必需的数据 (优化性能)
   const [marketStateText, positionStateText, account, invocationCount] = await Promise.all([
@@ -457,5 +460,7 @@ export async function buildPromptReplacements(model, options = {}) {
       2
     ), // 账户总价值 (2 位小数)
     allowed_symbols: Array.from(new Set(symbols.map(normalizeSymbol))).join(", "),
+    allowed_symbols_list: Array.from(new Set(symbols.map(normalizeSymbol))),
+    allowed_symbols_text: Array.from(new Set(symbols.map(normalizeSymbol))).join(", "),
   };
 }

@@ -193,9 +193,8 @@ function deriveCards(models, seriesMeta) {
     .map((model) => {
       const seriesEntry = latestByModel.get(model.model_id);
       if (!seriesEntry) {
-        throw new Error(
-          `模型 ${model.model_id} 缺少时间序列数据，无法计算盈亏。请检查 /api/performance/timeseries 是否返回该模型。`
-        );
+        // 若缺少时间序列，跳过该模型卡片，避免前端直接抛错
+        return null;
       }
 
       const latest = Number(seriesEntry.latestDollar ?? NaN);
@@ -221,7 +220,8 @@ function deriveCards(models, seriesMeta) {
         iconValue: model.display_icon,
         isBenchmark: false,
       };
-    });
+    })
+    .filter(Boolean);
 }
 
 export default function ChartPanel() {

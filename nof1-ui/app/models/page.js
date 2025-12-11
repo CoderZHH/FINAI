@@ -59,6 +59,12 @@ const PLACEHOLDER_LIBRARY = [
     description: "当前账户净值、持仓与风险的总结。",
     sample_value: "Current Total Return (percent): -57.08% ...",
   },
+  {
+    token: "allowed_symbols",
+    label: "允许交易币种",
+    description: "当前模型配置的 allowed_symbols，逗号分隔文本。",
+    sample_value: "BTC, ETH, SOL",
+  },
 ];
 
 const EMPTY_FORM = {
