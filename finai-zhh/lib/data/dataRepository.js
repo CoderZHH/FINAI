@@ -3006,10 +3006,6 @@ export async function initializeBtcBenchmark() {
 
     const btcQuantity = initialUsd / btcPrice;
 
-    const template = await getDefaultPromptTemplate();
-    if (!template) {
-      throw new Error("尚未配置默认提示词模板，无法创建基准模型。");
-    }
     const ownerRes = await client.query(
       `
       SELECT id FROM users WHERE username = 'root' LIMIT 1
@@ -3045,7 +3041,7 @@ export async function initializeBtcBenchmark() {
         null,
         null,
         false,
-        template.id,
+        null,
         false,
         null,
         "icon:gpt",
@@ -3146,11 +3142,6 @@ export async function ensureUserBaseline(ownerUserId) {
   try {
     await client.query("BEGIN");
 
-    const template = await getDefaultPromptTemplate();
-    if (!template) {
-      throw new Error("尚未配置默认提示词模板，无法创建基准模型。");
-    }
-
     const fetchRemoteBtcPrice = async () => {
       try {
         const fetch = (await import("node-fetch")).default;
@@ -3208,7 +3199,7 @@ export async function ensureUserBaseline(ownerUserId) {
         null,
         null,
         false,
-        template.id,
+        null,
         false,
         null,
         "icon:gpt",

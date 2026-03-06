@@ -12,8 +12,12 @@ async function bootstrap() {
   const envFile = process.env.ENV_FILE ?? path.resolve(PROJECT_ROOT, ".env.local");
   await loadEnvFromFile(envFile, { override: false });
   const { ensureRootUser } = await import("../lib/auth/authService.js");
+  const { ensureUserBaseline } = await import("../lib/data/dataRepository.js");
   const { ensureAutoRunner } = await import("../lib/trading/autoRunner.js");
-  await ensureRootUser();
+  const root = await ensureRootUser();
+  if (root?.id) {
+    await ensureUserBaseline(root.id);
+  }
   logger.info("worker", "FINAI worker 启动中...");
   ensureAutoRunner();
   logger.info("worker", "FINAI worker 已启动 autoRunner");
