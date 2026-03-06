@@ -39,7 +39,13 @@ export async function GET(request) {
       const qParam = q ? `%${q}%` : null;
       const { rows } = await pool.query(
         `
-        SELECT symbol, price, change_percent, high_price, low_price, volume
+        SELECT
+          symbol,
+          price,
+          NULLIF(to_jsonb(market_prices) ->> 'change_percent', '')::numeric AS change_percent,
+          NULLIF(to_jsonb(market_prices) ->> 'high_price', '')::numeric AS high_price,
+          NULLIF(to_jsonb(market_prices) ->> 'low_price', '')::numeric AS low_price,
+          NULLIF(to_jsonb(market_prices) ->> 'volume', '')::numeric AS volume
         FROM market_prices
         WHERE symbol ~ 'USDT$'
           AND symbol !~ '(UP|DOWN|BEAR|BULL)USDT$'

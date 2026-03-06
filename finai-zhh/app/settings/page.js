@@ -174,7 +174,7 @@ export default function SettingsPage() {
           ) : null}
         </div>
         <Link
-          href="/"
+          href="/dashboard"
           className="inline-flex items-center justify-center rounded-full border border-neutral-300 px-4 py-1.5 text-sm font-semibold text-neutral-700 shadow-sm transition hover:bg-neutral-50"
         >
           返回主界面
