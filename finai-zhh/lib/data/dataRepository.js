@@ -25,6 +25,18 @@ const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 let promptTemplateSchemaEnsured = false;
 let agentModelSchemaEnsured = false;
 const BINANCE_API_BASE = requireEnv("BINANCE_API_BASE");
+const MARKET_UNIVERSE_TOP_N = Math.max(
+  0,
+  Number(process.env.MARKET_UNIVERSE_TOP_N ?? 200)
+);
+const MARKET_UNIVERSE_REFRESH_MS = Math.max(
+  60_000,
+  Number(process.env.MARKET_UNIVERSE_REFRESH_MS ?? 10 * 60 * 1000)
+);
+const marketUniverseState = globalThis.__marketUniverseState ?? {
+  lastSyncTs: 0,
+};
+globalThis.__marketUniverseState = marketUniverseState;
 
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
@@ -2869,10 +2881,10 @@ export async function countAgentLogs(modelId) {
  * �?Binance API 更新市场价格
  * @returns {Promise<number>} 更新的交易对数量
  */
-export async function updateMarketPricesFromBinance() {
+export async function updateMarketPricesFromBinance(options = {}) {
+  const forceUniverseRefresh = Boolean(options?.forceUniverseRefresh);
   await loadAllModelAllowedSymbols();
   const symbols = getTrackedSymbols();
-  if (!symbols.length) return 0;
   const pool = getPool();
 
   try {
@@ -2883,18 +2895,48 @@ export async function updateMarketPricesFromBinance() {
     }
     const allTickers = await response.json();
 
-    const allowedSet = new Set(
-      symbols.map((s) => ensureMarketSymbol(s)).map((s) => s.toUpperCase())
-    );
-    const filtered = allTickers.filter((t) => {
+    const allUsdtTickers = allTickers.filter((t) => {
       const sym = String(t.symbol || "").toUpperCase();
       if (!sym.endsWith("USDT")) return false;
       if (/UP|DOWN|BEAR|BULL/i.test(sym)) return false;
-      return allowedSet.has(sym);
+      return true;
     });
+    const trackedSet = new Set(
+      symbols.map((s) => ensureMarketSymbol(s)).map((s) => s.toUpperCase())
+    );
+    const trackedTickers = allUsdtTickers.filter((t) =>
+      trackedSet.has(String(t.symbol || "").toUpperCase())
+    );
+    const now = Date.now();
+    const shouldRefreshUniverse =
+      MARKET_UNIVERSE_TOP_N > 0 &&
+      (forceUniverseRefresh ||
+        now - (marketUniverseState.lastSyncTs ?? 0) >= MARKET_UNIVERSE_REFRESH_MS);
+
+    let targetTickers = trackedTickers;
+    if (shouldRefreshUniverse) {
+      const topUniverse = [...allUsdtTickers]
+        .sort(
+          (a, b) =>
+            Number(b.quoteVolume ?? b.volume ?? 0) -
+            Number(a.quoteVolume ?? a.volume ?? 0)
+        )
+        .slice(0, MARKET_UNIVERSE_TOP_N);
+      const dedup = new Map();
+      [...trackedTickers, ...topUniverse].forEach((t) => {
+        dedup.set(String(t.symbol || "").toUpperCase(), t);
+      });
+      targetTickers = Array.from(dedup.values());
+    }
+    if (!targetTickers.length) {
+      logger.info("dataRepository", "行情价格更新跳过：无待同步币种", {
+        tracked: symbols.length,
+      });
+      return 0;
+    }
 
     let updated = 0;
-    for (const ticker of filtered) {
+    for (const ticker of targetTickers) {
       const storageSymbol = ticker.symbol;
       await pool.query(
         `
@@ -2923,10 +2965,15 @@ export async function updateMarketPricesFromBinance() {
       );
       updated++;
     }
+    if (shouldRefreshUniverse) {
+      marketUniverseState.lastSyncTs = now;
+    }
 
     logger.info("dataRepository", "行情价格更新完成", {
       updated,
       tracked: symbols.length,
+      universe_refreshed: shouldRefreshUniverse,
+      universe_top_n: shouldRefreshUniverse ? MARKET_UNIVERSE_TOP_N : 0,
     });
     return updated;
   } catch (error) {

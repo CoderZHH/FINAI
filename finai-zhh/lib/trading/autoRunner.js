@@ -241,7 +241,7 @@ function ensureMarketLoop() {
   const bootstrap = async () => {
     try {
       // 初始化基准线模型（直调，避免 fetch 失败）
-      await updateMarketPricesFromBinance();
+      await updateMarketPricesFromBinance({ forceUniverseRefresh: true });
       await initializeBtcBenchmark();
       await updateBtcBenchmark();
     } catch (err) {
