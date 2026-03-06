@@ -1,4 +1,5 @@
 export const preferredRegion = "sin1";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/infrastructure/logManager";
@@ -73,10 +74,17 @@ export async function GET(request) {
       globalCache.data = tickers;
       globalCache.ts = now;
     }
-    return NextResponse.json({
-      tickers,
-      source: "market_prices",
-    });
+    return NextResponse.json(
+      {
+        tickers,
+        source: "market_prices",
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+        },
+      }
+    );
   } catch (error) {
     logger.error("api:markets", "行情接口失败", { error: error?.message });
     return NextResponse.json(
