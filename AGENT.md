@@ -1,6 +1,6 @@
 # Agent 系统技术白皮书
 
-本档案描述 FINAI 项目中基于 LLM 的交易 Agent 全栈实现，涵盖模型定义、调度、行情与交易流水、数据表协作、运行循环、调试与最佳实践。内容基于仓库现有结构与代码（`nof1-ui`）。
+本档案描述 FINAI 项目中基于 LLM 的交易 Agent 全栈实现，涵盖模型定义、调度、行情与交易流水、数据表协作、运行循环、调试与最佳实践。内容基于仓库现有结构与代码（`finai-zhh`）。
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### 代码组织
 ```
-nof1-ui/
+finai-zhh/
   app/                Next.js routes + API handlers
     api/              REST handlers（models, trades, risk, funding, ticker, markets...）
     models/page.js    模型管理 UI（创建/编辑 Agent、提示词）

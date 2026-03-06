@@ -2,7 +2,7 @@
 
 ## 修改的文件
 
-### 1. `/nof1-ui/lib/llmClient.ts` (核心修改)
+### 1. `/finai-zhh/lib/llmClient.ts` (核心修改)
 
 #### 主要变更:
 - ✅ 新增对 5 个 LLM 提供商的支持（原本仅支持 DeepSeek）
@@ -55,7 +55,7 @@ const PROVIDER_CONFIGS = {
   - 根据 `provider` 参数创建相应的聊天模型实例
   - 处理每个提供商的特定配置需求
 
-### 2. `/nof1-ui/app/models/page.js` (UI 修改)
+### 2. `/finai-zhh/app/models/page.js` (UI 修改)
 
 #### 表单控件修改:
 - ✅ 将 "模型提供商" 从 `<input>` 改为 `<select>` 下拉菜单
@@ -107,7 +107,7 @@ const getProviderDefaults = (provider) => {
 #### 默认值修改:
 - ✅ `EMPTY_FORM.provider` 从空字符串改为 `"deepseek"`
 
-### 3. `/nof1-ui/lib/LLM_PROVIDERS.md` (新增文档)
+### 3. `/finai-zhh/lib/LLM_PROVIDERS.md` (新增文档)
 
 创建了完整的多提供商使用文档，包括:
 - ✅ 所有支持的提供商详细说明

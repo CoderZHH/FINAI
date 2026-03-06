@@ -19,6 +19,7 @@ function requireEnv(name) {
   return value;
 }
 const BASELINE_MODEL_ID = "btc_benchmark";
+const BASELINE_MODEL_PREFIX = "btc_benchmark";
 const DEFAULT_MODEL_ICON = "icon:gpt";
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 let promptTemplateSchemaEnsured = false;
@@ -26,6 +27,10 @@ let agentModelSchemaEnsured = false;
 const BINANCE_API_BASE = requireEnv("BINANCE_API_BASE");
 
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
+
+function isBaselineModelId(modelId) {
+  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+}
 
 function normalizeAllowedSymbolsList(symbols) {
   const cleaned = (symbols ?? [])
@@ -546,60 +551,67 @@ export async function getTickerRows() {
 
 export async function updateBtcBenchmark() {
   const pool = getPool();
-  const modelId = BASELINE_MODEL_ID;
   const storageSymbol = ensureMarketSymbol("BTC");
 
   try {
-    const runtime = await getRuntimeAccount(modelId);
-    const quantity = Number(runtime?.metadata?.benchmark_quantity ?? 0);
-    const entryPrice = Number(runtime?.metadata?.benchmark_entry_price ?? 0);
-    if (!runtime || !quantity || !entryPrice) {
+    const { rows: baselineRows } = await pool.query(
+      `
+      SELECT model_id
+      FROM agent_models
+      WHERE model_id LIKE $1
+      `,
+      [`${BASELINE_MODEL_PREFIX}%`]
+    );
+    if (!baselineRows.length) {
       return null;
     }
+
     const priceResult = await pool.query(
       `SELECT price FROM market_prices WHERE symbol = $1 ORDER BY updated_at DESC LIMIT 1`,
       [storageSymbol]
     );
-    let currentPrice = toNumber(priceResult.rows[0]?.price ?? entryPrice);
+    let currentPrice = toNumber(priceResult.rows[0]?.price ?? 0);
     if (!currentPrice) {
       const snapshot = await getMarketSnapshot();
-      currentPrice = toNumber(snapshot.prices.BTC?.price ?? entryPrice);
+      currentPrice = toNumber(snapshot.prices.BTC?.price ?? 0);
     }
 
-    const currentNotional = currentPrice * quantity;
-    const unrealizedPnl = currentNotional - entryPrice * quantity;
-    const equity = currentNotional;
+    let updated = 0;
+    for (const row of baselineRows) {
+      const modelId = row.model_id;
+      const runtime = await getRuntimeAccount(modelId);
+      const quantity = Number(runtime?.metadata?.benchmark_quantity ?? 0);
+      const entryPrice = Number(runtime?.metadata?.benchmark_entry_price ?? 0);
+      if (!runtime || !quantity || !entryPrice) {
+        continue;
+      }
 
-    await upsertRuntimeAccount(modelId, {
-      starting_equity: runtime.starting_equity ?? entryPrice * quantity,
-      latest_equity: equity,
-      available_cash: 0,
-      total_unrealized_pnl: unrealizedPnl,
-      metadata: runtime.metadata,
-    });
+      const currentNotional = currentPrice * quantity;
+      const unrealizedPnl = currentNotional - entryPrice * quantity;
+      const equity = currentNotional;
 
-    await appendAccountTimeseries({
-      modelId,
-      ts: new Date(),
-      equity,
-      cash_available: 0,
-      unrealized_pnl: unrealizedPnl,
-      realized_pnl: 0,
-      sharpe: 0,
-      win_rate: 0,
-    });
+      await upsertRuntimeAccount(modelId, {
+        starting_equity: runtime.starting_equity ?? entryPrice * quantity,
+        latest_equity: equity,
+        available_cash: 0,
+        total_unrealized_pnl: unrealizedPnl,
+        metadata: runtime.metadata,
+      });
 
-    return {
-      modelId,
-      currentPrice,
-      quantity,
-      equity,
-      unrealizedPnl,
-      returnPercent:
-        entryPrice && quantity
-          ? ((equity / (entryPrice * quantity)) - 1) * 100
-          : 0,
-    };
+      await appendAccountTimeseries({
+        modelId,
+        ts: new Date(),
+        equity,
+        cash_available: 0,
+        unrealized_pnl: unrealizedPnl,
+        realized_pnl: 0,
+        sharpe: 0,
+        win_rate: 0,
+      });
+      updated += 1;
+    }
+
+    return { updated, currentPrice };
   } catch (error) {
     logger.error("benchmark", "BTC 基准权益更新失败", { error: error?.message });
     throw error;
@@ -1537,7 +1549,7 @@ export async function getPerformanceTimeseries({ ownerUserId = null } = {}) {
 export async function getPositionsSnapshot({ ownerUserId = null } = {}) {
   const pool = getPool();
   const accounts = (await getAgentAccounts({ ownerUserId })).filter(
-    (account) => account.model_id !== BASELINE_MODEL_ID
+    (account) => !isBaselineModelId(account.model_id)
   );
   if (!accounts.length) return [];
 
@@ -1576,7 +1588,7 @@ export async function markToMarketAllModels() {
   const accounts = await getAgentAccounts();
   if (!accounts.length) return { updated: [] };
 
-  const tradable = accounts.filter((account) => account.model_id !== BASELINE_MODEL_ID);
+  const tradable = accounts.filter((account) => !isBaselineModelId(account.model_id));
   if (!tradable.length) {
     return { updated: [], snapshots: [] };
   }
@@ -3107,4 +3119,158 @@ export async function initializeBtcBenchmark() {
   } finally {
     client.release();
   }
+}
+
+export async function ensureUserBaseline(ownerUserId) {
+  const userId = String(ownerUserId ?? "").trim();
+  if (!userId) {
+    throw new Error("ownerUserId is required to ensure user baseline");
+  }
+  const pool = getPool();
+  const { rows: ownerRows } = await pool.query(
+    `SELECT username FROM users WHERE id = $1 LIMIT 1`,
+    [userId]
+  );
+  const ownerUsername = ownerRows[0]?.username ?? null;
+  const modelId =
+    ownerUsername === "root" ? BASELINE_MODEL_ID : `${BASELINE_MODEL_PREFIX}_${userId}`;
+
+  const existing = await getAgentModelById(modelId, {
+    includeSecrets: false,
+    ownerUserId: userId,
+  });
+  if (existing) return existing;
+
+  const initialUsd = 10000;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const template = await getDefaultPromptTemplate();
+    if (!template) {
+      throw new Error("尚未配置默认提示词模板，无法创建基准模型。");
+    }
+
+    const fetchRemoteBtcPrice = async () => {
+      try {
+        const fetch = (await import("node-fetch")).default;
+        const url = `${BINANCE_API_BASE}/api/v3/ticker/price?symbol=BTCUSDT`;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const body = await resp.json();
+        const price = Number(body?.price ?? 0);
+        return Number.isFinite(price) && price > 0 ? price : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const { rows: pxRows } = await client.query(
+      `
+      SELECT price
+      FROM market_prices
+      WHERE symbol IN ('BTCUSDT', 'BTC')
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `
+    );
+    let btcPrice = Number(pxRows[0]?.price ?? 0);
+    if (!btcPrice) {
+      btcPrice = (await fetchRemoteBtcPrice()) ?? 0;
+    }
+    if (!btcPrice) {
+      throw new Error("无法获取 BTC 最新价格，请先同步行情。");
+    }
+    const btcQuantity = initialUsd / btcPrice;
+
+    await client.query(
+      `
+      INSERT INTO agent_models (
+        model_id,
+        owner_user_id,
+        display_name,
+        api_base_url,
+        api_key,
+        human_review_required,
+        prompt_template_id,
+        auto_run_enabled,
+        auto_run_interval_minutes,
+        display_icon,
+        allowed_symbols
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      ON CONFLICT (model_id) DO NOTHING
+      `,
+      [
+        modelId,
+        userId,
+        "BTC Benchmark",
+        null,
+        null,
+        false,
+        template.id,
+        false,
+        null,
+        "icon:gpt",
+        ["BTC"],
+      ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO agent_accounts_runtime (
+        model_id,
+        starting_equity,
+        latest_equity,
+        available_cash,
+        total_unrealized_pnl,
+        metadata,
+        updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6, now())
+      ON CONFLICT (model_id) DO UPDATE SET
+        starting_equity = EXCLUDED.starting_equity,
+        latest_equity = EXCLUDED.latest_equity,
+        available_cash = EXCLUDED.available_cash,
+        total_unrealized_pnl = EXCLUDED.total_unrealized_pnl,
+        metadata = EXCLUDED.metadata,
+        updated_at = now()
+      `,
+      [
+        modelId,
+        initialUsd,
+        initialUsd,
+        0,
+        0,
+        JSON.stringify({
+          benchmark_quantity: btcQuantity,
+          benchmark_entry_price: btcPrice,
+        }),
+      ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO agent_account_timeseries (
+        model_id,
+        ts,
+        equity,
+        cash_available,
+        unrealized_pnl,
+        realized_pnl
+      )
+      VALUES ($1, now(), $2, $3, $4, $5)
+      `,
+      [modelId, initialUsd, 0, 0, 0]
+    );
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return getAgentModelById(modelId, { includeSecrets: false, ownerUserId: userId });
 }

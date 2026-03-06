@@ -22,15 +22,15 @@
 4. 服务名建议：`finai-worker`。
 
 ### 步骤 B：设置启动目录与命令
-- Root Directory：`nof1-ui`
+- Root Directory：`finai-zhh`
 - Start Command：`npm run worker`
 
 ### 步骤 C：配置环境变量（必须）
 - `POSTGRES_URL=<你的Neon生产连接串>`
 - `POSTGRES_SSL=true`
-- `INTERNAL_API_BASE_URL=https://nof1-ui.vercel.app`  
+- `INTERNAL_API_BASE_URL=https://finai-zhh.vercel.app`  
   （如果你后面改了正式域名，这里同步改）
-- `NEXT_PUBLIC_BASE_URL=https://nof1-ui.vercel.app`
+- `NEXT_PUBLIC_BASE_URL=https://finai-zhh.vercel.app`
 - `BINANCE_API_BASE=https://api.binance.com`
 - `BINANCE_FAPI_BASE=https://fapi.binance.com`
 - `AUTO_RUNNER_TICK_MS=5000`
@@ -48,7 +48,7 @@
    - `FINAI worker 已启动 autoRunner`
 
 ## 5. 上线后你要验证的 5 件事
-1. 打开 `https://nof1-ui.vercel.app` 页面正常。
+1. 打开 `https://finai-zhh.vercel.app` 页面正常。
 2. 登录 root 后能看到数据面板。
 3. 游客可看不可改（models/settings/decision 均只读）。
 4. Worker 日志持续输出轮询行为，不崩溃重启。

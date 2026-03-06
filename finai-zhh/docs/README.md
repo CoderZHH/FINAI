@@ -6,7 +6,7 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
 
 1. **Install dependencies**
    ```bash
-   cd nof1-ui
+   cd finai-zhh
    npm install
    ```
 2. **Environment** – copy `.env.example` to `.env.local` and fill `POSTGRES_URL`, `POSTGRES_SSL` (if needed), plus LLM credentials (`api_base_url` / `api_key`).

@@ -46,7 +46,7 @@
 
 ## 4. 部署执行结果（已完成）
 - Vercel 项目已创建并可访问：
-  - 正式域名：`https://nof1-ui.vercel.app`
+  - 正式域名：`https://finai-zhh.vercel.app`
 - 生产部署已通过（含构建、静态页生成、函数打包）。
 - Neon 数据库已完成初始化（建表 + 种子）。
 

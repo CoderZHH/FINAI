@@ -1,4 +1,5 @@
 import { createSession, createUser } from "../../../../lib/auth/authService.js";
+import { ensureUserBaseline } from "../../../../lib/data/dataRepository.js";
 import { NextResponse } from "next/server";
 
 export async function POST(request) {
@@ -9,6 +10,7 @@ export async function POST(request) {
       password: payload?.password,
       role: "USER",
     });
+    await ensureUserBaseline(user.id);
     const session = await createSession(user.id);
     const response = NextResponse.json({
       user: {

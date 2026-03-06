@@ -20,6 +20,12 @@ export async function getRequestPrincipal(request, { allowGuest = true } = {}) {
     await ensureRootUser();
     const root = await getUserByUsername("root");
     if (!root) return null;
+    try {
+      const { ensureUserBaseline } = await import("../data/dataRepository.js");
+      await ensureUserBaseline(root.id);
+    } catch (error) {
+      console.warn("[auth] ensure guest baseline failed:", error?.message);
+    }
     return {
       kind: "guest",
       userId: root.id,
@@ -33,6 +39,12 @@ export async function getRequestPrincipal(request, { allowGuest = true } = {}) {
   if (!token) return null;
   const session = await getSessionByToken(token);
   if (!session) return null;
+  try {
+    const { ensureUserBaseline } = await import("../data/dataRepository.js");
+    await ensureUserBaseline(session.user.id);
+  } catch (error) {
+    console.warn("[auth] ensure user baseline failed:", error?.message);
+  }
   return {
     kind: "user",
     userId: session.user.id,

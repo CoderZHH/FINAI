@@ -6,12 +6,12 @@
 - `AGENT.md`：Agent/自动交易架构详解。
 - `binance-spot-api-docs-master/**`：币安官方现货/Testnet 文档和示例（仅参考，不参与构建）。
 
-## 工程配置（nof1-ui）
+## 工程配置（finai-zhh）
 - `package.json` / `package-lock.json`：依赖、脚本。
 - `tsconfig.json` / `tsconfig.tsbuildinfo`：TypeScript/JS 路径配置，`@/*` 指向项目根。
 - `next.config.mjs` / `eslint.config.mjs` / `postcss.config.cjs` / `jsconfig.json` / `next-env.d.ts` / `instrumentation.js`：Next.js 构建、Lint、全局插桩。
 
-## 核心库（nof1-ui/lib）
+## 核心库（finai-zhh/lib）
 ### 基础设施
 - `db.js`：PostgreSQL 连接池。
 - `logManager.js`：统一日志缓冲与 SSE 推送。
@@ -71,7 +71,7 @@
 - `api/binance/funding/route.js`：资金费同步。
 - `api/sim-config/route.js`：模拟交易手续费配置。
 
-## 组件（nof1-ui/components）
+## 组件（finai-zhh/components）
 - `Header.js`、`TickerBar.js`、`RightFeed.js`：页面框架/行情侧边栏。
 - `ChartPanel.js`、`ChartInner.js`：图表/曲线展示。
 - `CoinBadge.js`：币种徽章。

@@ -1,4 +1,5 @@
 import { createSession, verifyUserCredentials } from "../../../../lib/auth/authService.js";
+import { ensureUserBaseline } from "../../../../lib/data/dataRepository.js";
 import { NextResponse } from "next/server";
 
 export async function POST(request) {
@@ -8,6 +9,7 @@ export async function POST(request) {
     if (!user) {
       return Response.json({ error: "Invalid username or password" }, { status: 401 });
     }
+    await ensureUserBaseline(user.id);
     const session = await createSession(user.id);
     const response = NextResponse.json({
       user: {

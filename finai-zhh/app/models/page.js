@@ -1158,7 +1158,7 @@ export default function ModelsPage() {
   const { data, error, isLoading, mutate } = useSWR("/api/models?includeSecrets=false", fetcher);
   const models = useMemo(() => {
     return (data?.models ?? [])
-      .filter((model) => model.model_id !== "btc_benchmark")
+      .filter((model) => !String(model.model_id ?? "").startsWith("btc_benchmark"))
       .map((model) => ({
         ...model,
         display_icon: model.display_icon || DEFAULT_MODEL_ICON,
