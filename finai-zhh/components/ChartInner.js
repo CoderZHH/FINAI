@@ -65,9 +65,14 @@ const SERIES_COLOR_MAP = {
 };
 
 const BTC_ICON = "/api/asset-logo?symbol=BTC";
+const BASELINE_MODEL_PREFIX = "btc_benchmark";
+
+function isBaselineModelId(modelId) {
+  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+}
 
 function getSeriesColor(entry) {
-  if (entry.isBenchmark || entry.modelId === "btc_benchmark") {
+  if (entry.isBenchmark || isBaselineModelId(entry.modelId)) {
     return SERIES_COLOR_MAP.btc;
   }
   const normalized = entry.iconValue ? normaliseIconValue(entry.iconValue) : null;
@@ -87,7 +92,7 @@ function getContrastColor(rgbString) {
 }
 
 function buildEndLabelConfig(seriesEntry, fillColor, latestValue, formatValue) {
-  const isBenchmark = seriesEntry.isBenchmark || seriesEntry.modelId === "btc_benchmark";
+  const isBenchmark = seriesEntry.isBenchmark || isBaselineModelId(seriesEntry.modelId);
   const iconInfo = isBenchmark
     ? { type: "image", src: BTC_ICON, value: "BTC" }
     : resolveModelIcon(seriesEntry.iconValue);
@@ -231,7 +236,7 @@ export default function ChartInner({
           globalMax = Math.max(globalMax, parsed);
           return parsed;
         }
-        return raw ?? null;
+        return null;
       });
 
       const seriesColor = getSeriesColor(entry);
@@ -297,7 +302,8 @@ export default function ChartInner({
           // 构建每个系列的数值行
           const rows = params
             .map((item) => {
-              const val = formatValue(item.value);
+              const safeValue = Number(item.value);
+              const val = Number.isFinite(safeValue) ? formatValue(safeValue) : "—";
               return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
                   <span style="display:flex;align-items:center;gap:6px;">
                     <span style="width:10px;height:10px;border-radius:999px;background:${item.color};display:inline-block;"></span>

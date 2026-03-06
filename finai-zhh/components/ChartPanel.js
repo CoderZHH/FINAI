@@ -39,7 +39,7 @@ const COLOR_PALETTE = [
   "#F97316",
 ];
 
-const BASELINE_MODEL_ID = "btc_benchmark";
+const BASELINE_MODEL_PREFIX = "btc_benchmark";
 const PROVIDER_DEFAULT_BASE_URL = {
   openai: "https://api.openai.com/v1",
   deepseek: "https://api.deepseek.com",
@@ -89,6 +89,10 @@ function resolveIconForModel(model) {
     return providerIcon;
   }
   return rawIcon;
+}
+
+function isBaselineModelId(modelId) {
+  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
 }
 
 function renderIcon(iconValue) {
@@ -149,7 +153,25 @@ function deriveChartData(seriesMeta, viewMode) {
     });
   });
 
-  return Array.from(timestampEntries.values()).sort((a, b) => a.ts - b.ts);
+  const rows = Array.from(timestampEntries.values()).sort((a, b) => a.ts - b.ts);
+
+  // 对每条线做前值延续，避免“不同模型更新时刻不一致”造成的密集断点
+  seriesMeta.forEach((series) => {
+    let hasStarted = false;
+    let lastValue = null;
+    rows.forEach((row) => {
+      const parsed = Number(row[series.line_key]);
+      if (Number.isFinite(parsed)) {
+        row[series.line_key] = parsed;
+        hasStarted = true;
+        lastValue = parsed;
+        return;
+      }
+      row[series.line_key] = hasStarted ? lastValue : null;
+    });
+  });
+
+  return rows;
 }
 
 /** 右侧 legend / 每条线的配置 */
@@ -179,6 +201,12 @@ function deriveLegend(seriesMeta, iconLookup) {
 
 /** 下方卡片 */
 function deriveCards(models, seriesMeta) {
+  const benchmarkModelIds = new Set(
+    (seriesMeta ?? [])
+      .filter((series) => Boolean(series?.is_benchmark))
+      .map((series) => String(series.model_id ?? ""))
+      .filter(Boolean)
+  );
   const latestByModel = new Map();
   (seriesMeta ?? []).forEach((series) => {
     const latestPoint = series.points?.at(-1) ?? {};
@@ -189,7 +217,15 @@ function deriveCards(models, seriesMeta) {
   });
 
   return (models ?? [])
-    .filter((model) => model.model_id !== BASELINE_MODEL_ID)
+    .filter((model) => {
+      const modelId = String(model?.model_id ?? "");
+      const displayName = String(model?.display_name ?? "").trim().toLowerCase();
+      if (!modelId) return false;
+      if (isBaselineModelId(modelId)) return false;
+      if (benchmarkModelIds.has(modelId)) return false;
+      if (displayName === "btc benchmark") return false;
+      return true;
+    })
     .map((model) => {
       const seriesEntry = latestByModel.get(model.model_id);
       if (!seriesEntry) {
@@ -246,7 +282,7 @@ export default function ChartPanel() {
         const color =
           series.color ?? COLOR_PALETTE[idx % COLOR_PALETTE.length];
         const isBenchmark =
-          series.is_benchmark ?? series.model_id === BASELINE_MODEL_ID;
+          series.is_benchmark ?? isBaselineModelId(series.model_id);
 
         return {
           ...series,

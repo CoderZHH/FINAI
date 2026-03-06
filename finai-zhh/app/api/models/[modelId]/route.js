@@ -15,6 +15,8 @@ import { getPool } from "../../../../lib/infrastructure/db.js";
 import { importMarketData } from "../../../../lib/market/marketImporter.js";
 import { requirePrincipal } from "../../../../lib/auth/requestAuth.js";
 
+export const dynamic = "force-dynamic";
+
 function compactModelResponse(model) {
   if (!model) return model;
   const allowed = new Set([
@@ -220,7 +222,10 @@ export async function GET(_request, context) {
   if (!model) {
     return Response.json({ error: "Model not found" }, { status: 404 });
   }
-  return Response.json({ model: compactModelResponse(model) });
+  return Response.json(
+    { model: compactModelResponse(model) },
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } }
+  );
 }
 
 export async function PUT(request, context) {

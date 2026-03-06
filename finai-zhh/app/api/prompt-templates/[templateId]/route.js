@@ -6,6 +6,8 @@ import {
 } from "../../../../lib/data/dataRepository";
 import { requirePrincipal } from "../../../../lib/auth/requestAuth.js";
 
+export const dynamic = "force-dynamic";
+
 async function getTemplateId(context) {
   if (!context) return undefined;
   if ("params" in context) {
@@ -27,7 +29,10 @@ export async function GET(_request, context) {
   if (!template) {
     return Response.json({ error: "Template not found" }, { status: 404 });
   }
-  return Response.json({ template });
+  return Response.json(
+    { template },
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } }
+  );
 }
 
 export async function PUT(request, context) {

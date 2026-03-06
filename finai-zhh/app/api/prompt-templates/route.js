@@ -5,6 +5,8 @@ import {
 } from "../../../lib/data/dataRepository";
 import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request) {
   const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: false });
   if (!auth.ok) return auth.response;
@@ -15,7 +17,10 @@ export async function GET(request) {
     includeContent,
     ownerUserId: principal.userId,
   });
-  return Response.json({ templates });
+  return Response.json(
+    { templates },
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } }
+  );
 }
 
 export async function POST(request) {

@@ -10,6 +10,8 @@ import { importMarketData } from "../../../lib/market/marketImporter.js";
 import { logger } from "@/lib/infrastructure/logManager";
 import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 
+export const dynamic = "force-dynamic";
+
 function slugifyDisplayName(name) {
   return name
     .toLowerCase()
@@ -99,7 +101,10 @@ export async function GET(request) {
     ownerUserId: principal.userId,
   });
 
-  return Response.json({ models: models.map(compactModelResponse) });
+  return Response.json(
+    { models: models.map(compactModelResponse) },
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } }
+  );
 }
 
 export async function POST(request) {

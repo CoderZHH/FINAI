@@ -9,7 +9,10 @@ import dynamic from "next/dynamic";
 
 const fetcher = (url) => fetch(url).then((response) => response.json());
 
-const BASELINE_MODEL_ID = "btc_benchmark";
+const BASELINE_MODEL_PREFIX = "btc_benchmark";
+function isBaselineModelId(modelId) {
+  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+}
 const ChartInner = dynamic(() => import("./ChartInner"), { ssr: false });
 
 function PendingCard({ entry, iconMap, onAction, readOnly = false }) {
@@ -638,7 +641,15 @@ function ModelChatPanel({ iconMap = {} }) {
 function PositionsPanel({ iconMap }) {
   const { data } = useSWR("/api/positions/current", fetcher, { refreshInterval: 8000 });
   const totals = (data?.accountTotals ?? []).filter(
-    (account) => account.model_id !== BASELINE_MODEL_ID
+    (account) => {
+      const modelId = String(account?.model_id ?? "");
+      const displayName = String(account?.name ?? account?.display_name ?? "")
+        .trim()
+        .toLowerCase();
+      if (isBaselineModelId(modelId)) return false;
+      if (displayName === "btc benchmark") return false;
+      return true;
+    }
   );
 
   if (!totals.length) {

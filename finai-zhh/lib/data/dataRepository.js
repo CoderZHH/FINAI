@@ -20,6 +20,7 @@ function requireEnv(name) {
 }
 const BASELINE_MODEL_ID = "btc_benchmark";
 const BASELINE_MODEL_PREFIX = "btc_benchmark";
+const BASELINE_DISPLAY_ICON = "/api/asset-logo?symbol=BTC";
 const DEFAULT_MODEL_ICON = "icon:gpt";
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const ROOT_USERNAME = process.env.FINAI_ROOT_USERNAME || "root";
@@ -1856,6 +1857,10 @@ export async function getPerformanceTimeseries({ ownerUserId = null } = {}) {
     name: account.display_name,
     line_key: account.model_id.replace(/[^a-z0-9]/gi, "_"),
     color: account.color,
+    is_benchmark:
+      isBaselineModelId(account.model_id) ||
+      Number(account?.metadata?.benchmark_quantity ?? 0) > 0 ||
+      String(account?.display_name ?? "").trim().toLowerCase() === "btc benchmark",
     points: historyByModel[account.model_id] ?? [],
   }));
 
@@ -3358,8 +3363,9 @@ export async function initializeBtcBenchmark() {
 
     const ownerRes = await client.query(
       `
-      SELECT id FROM users WHERE username = 'root' LIMIT 1
-      `
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+      `,
+      [ROOT_USERNAME]
     );
     const ownerUserId = ownerRes.rows[0]?.id;
     if (!ownerUserId) {
@@ -3394,7 +3400,7 @@ export async function initializeBtcBenchmark() {
         null,
         false,
         null,
-        "icon:gpt",
+        BASELINE_DISPLAY_ICON,
         ["BTC"],
       ]
     );
@@ -3479,13 +3485,26 @@ export async function ensureUserBaseline(ownerUserId) {
   );
   const ownerUsername = ownerRows[0]?.username ?? null;
   const modelId =
-    ownerUsername === "root" ? BASELINE_MODEL_ID : `${BASELINE_MODEL_PREFIX}_${userId}`;
+    ownerUsername === ROOT_USERNAME ? BASELINE_MODEL_ID : `${BASELINE_MODEL_PREFIX}_${userId}`;
 
   const existing = await getAgentModelById(modelId, {
     includeSecrets: false,
     ownerUserId: userId,
   });
-  if (existing) return existing;
+  if (existing) {
+    if (existing.display_icon !== BASELINE_DISPLAY_ICON) {
+      await pool.query(
+        `
+        UPDATE agent_models
+        SET display_icon = $2, updated_at = now()
+        WHERE model_id = $1
+        `,
+        [modelId, BASELINE_DISPLAY_ICON]
+      );
+      return getAgentModelById(modelId, { includeSecrets: false, ownerUserId: userId });
+    }
+    return existing;
+  }
 
   const initialUsd = 10000;
   const client = await pool.connect();
@@ -3552,7 +3571,7 @@ export async function ensureUserBaseline(ownerUserId) {
         null,
         false,
         null,
-        "icon:gpt",
+        BASELINE_DISPLAY_ICON,
         ["BTC"],
       ]
     );
