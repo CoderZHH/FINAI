@@ -8,15 +8,20 @@ import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 export async function GET(request) {
   const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: false });
   if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const url = new URL(request.url);
   const includeContent = url.searchParams.get("includeContent") !== "false";
-  const templates = await listPromptTemplates({ includeContent });
+  const templates = await listPromptTemplates({
+    includeContent,
+    ownerUserId: principal.userId,
+  });
   return Response.json({ templates });
 }
 
 export async function POST(request) {
   const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
   if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   try {
     const payload = await request.json();
     const template = await createPromptTemplate({
@@ -36,6 +41,8 @@ export async function POST(request) {
           ? payload.sample_position_state_text
           : "",
       is_default: Boolean(payload?.is_default),
+    }, {
+      ownerUserId: principal.userId,
     });
     return Response.json({ template });
   } catch (error) {

@@ -3,7 +3,6 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/infrastructure/logManager";
-import { getPool } from "@/lib/infrastructure/db";
 
 const CACHE_MS = 45_000;
 const globalCache = globalThis.__binanceTickerCache ?? {
@@ -12,10 +11,74 @@ const globalCache = globalThis.__binanceTickerCache ?? {
   ts: 0,
 };
 globalThis.__binanceTickerCache = globalCache;
+const BINANCE_API_BASE = process.env.BINANCE_API_BASE ?? "https://api.binance.com";
+const BINANCE_BASE_CANDIDATES = [
+  "https://data-api.binance.vision",
+  BINANCE_API_BASE,
+  "https://api1.binance.com",
+  "https://api2.binance.com",
+  "https://api3.binance.com",
+  "https://api4.binance.com",
+];
+
+function mapTickerRow(t) {
+  const symbol = String(t.symbol || "").toUpperCase();
+  const base = symbol.replace(/USDT$/i, "");
+  return {
+    symbol,
+    base,
+    price: Number(t.lastPrice) || 0,
+    changePercent: Number(t.priceChangePercent) || 0,
+    quoteVolume: Number(t.quoteVolume ?? t.volume ?? 0) || 0,
+    highPrice: t.highPrice == null ? null : Number(t.highPrice) || null,
+    lowPrice: t.lowPrice == null ? null : Number(t.lowPrice) || null,
+    icon: `https://static.binance.us/assets/coins/${base}.svg`,
+  };
+}
+
+function filterUsdtCandidates(rows = [], q = "") {
+  return rows
+    .filter((t) => {
+      const symbol = String(t.symbol || "").toUpperCase();
+      if (!symbol.endsWith("USDT")) return false;
+      if (/UP|DOWN|BEAR|BULL/i.test(symbol)) return false;
+      if (!q) return true;
+      const base = symbol.replace(/USDT$/i, "");
+      return base.includes(q) || symbol.includes(q);
+    })
+    .map(mapTickerRow);
+}
+
+async function fetchCandidatesFromBinance() {
+  let lastError = null;
+  for (const baseUrl of BINANCE_BASE_CANDIDATES) {
+    try {
+      const resp = await fetch(`${baseUrl}/api/v3/ticker/24hr`, {
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "finai-symbol-picker/1.0",
+        },
+      });
+      if (!resp.ok) {
+        lastError = new Error(`Binance API error ${resp.status}`);
+        continue;
+      }
+      const data = await resp.json();
+      if (!Array.isArray(data)) {
+        lastError = new Error("Binance API payload is not an array");
+        continue;
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error("Binance API unavailable");
+}
 
 export async function GET(request) {
   try {
-    const pool = getPool();
     const url = new URL(request.url);
     const q = url.searchParams.get("q")?.trim().toUpperCase() ?? "";
     const sort = url.searchParams.get("sort") ?? "volume"; // volume | percent | price
@@ -31,45 +94,14 @@ export async function GET(request) {
         ? globalCache.data
         : null;
     if (!tickers) {
-      const orderBySql =
-        sort === "percent"
-          ? "COALESCE(change_percent, 0) DESC"
-          : sort === "price"
-            ? "COALESCE(price, 0) DESC"
-            : "COALESCE(volume, 0) DESC";
-      const qParam = q ? `%${q}%` : null;
-      const { rows } = await pool.query(
-        `
-        SELECT
-          symbol,
-          price,
-          NULLIF(to_jsonb(market_prices) ->> 'change_percent', '')::numeric AS change_percent,
-          NULLIF(to_jsonb(market_prices) ->> 'high_price', '')::numeric AS high_price,
-          NULLIF(to_jsonb(market_prices) ->> 'low_price', '')::numeric AS low_price,
-          NULLIF(to_jsonb(market_prices) ->> 'volume', '')::numeric AS volume
-        FROM market_prices
-        WHERE symbol ~ 'USDT$'
-          AND symbol !~ '(UP|DOWN|BEAR|BULL)USDT$'
-          AND ($1::text IS NULL OR symbol ILIKE $1)
-        ORDER BY ${orderBySql}
-        LIMIT $2
-        `,
-        [qParam, limit]
-      );
-      tickers = rows.map((row) => {
-        const symbol = String(row.symbol || "").toUpperCase();
-        const base = symbol.replace(/USDT$/i, "");
-        return {
-          symbol,
-          base,
-          price: Number(row.price) || 0,
-          changePercent: Number(row.change_percent) || 0,
-          quoteVolume: Number(row.volume) || 0,
-          highPrice: row.high_price == null ? null : Number(row.high_price),
-          lowPrice: row.low_price == null ? null : Number(row.low_price),
-          icon: `https://static.binance.us/assets/coins/${base}.svg`,
-        };
+      const rows = await fetchCandidatesFromBinance();
+      const filtered = filterUsdtCandidates(rows, q);
+      const sorted = filtered.sort((a, b) => {
+        if (sort === "percent") return (b.changePercent ?? 0) - (a.changePercent ?? 0);
+        if (sort === "price") return (b.price ?? 0) - (a.price ?? 0);
+        return (b.quoteVolume ?? 0) - (a.quoteVolume ?? 0);
       });
+      tickers = sorted.slice(0, limit);
       globalCache.key = cacheKey;
       globalCache.data = tickers;
       globalCache.ts = now;
@@ -77,7 +109,7 @@ export async function GET(request) {
     return NextResponse.json(
       {
         tickers,
-        source: "market_prices",
+        source: "binance_live_candidates",
       },
       {
         headers: {
@@ -86,9 +118,9 @@ export async function GET(request) {
       }
     );
   } catch (error) {
-    logger.error("api:markets", "行情接口失败", { error: error?.message });
+    logger.error("api:markets", "候选币列表获取失败", { error: error?.message });
     return NextResponse.json(
-      { error: error?.message ?? "行情数据获取失败" },
+      { error: error?.message ?? "候选币列表获取失败" },
       { status: 502 }
     );
   }

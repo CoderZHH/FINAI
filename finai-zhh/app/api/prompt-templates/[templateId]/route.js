@@ -18,8 +18,12 @@ async function getTemplateId(context) {
 export async function GET(_request, context) {
   const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: false });
   if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const templateId = await getTemplateId(context);
-  const template = await getPromptTemplateById(templateId);
+  const template = await getPromptTemplateById(templateId, {
+    ownerUserId: principal.userId,
+    includeShared: true,
+  });
   if (!template) {
     return Response.json({ error: "Template not found" }, { status: 404 });
   }
@@ -29,13 +33,16 @@ export async function GET(_request, context) {
 export async function PUT(request, context) {
   const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
   if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const templateId = await getTemplateId(context);
   if (!templateId) {
     return Response.json({ error: "templateId is required" }, { status: 400 });
   }
   try {
     const payload = await request.json();
-    const template = await updatePromptTemplate(templateId, payload ?? {});
+    const template = await updatePromptTemplate(templateId, payload ?? {}, {
+      ownerUserId: principal.userId,
+    });
     return Response.json({ template });
   } catch (error) {
     logger.error("api:prompt-templates", "更新模板失败", {
@@ -50,12 +57,13 @@ export async function PUT(request, context) {
 export async function DELETE(_request, context) {
   const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: true });
   if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const templateId = await getTemplateId(context);
   if (!templateId) {
     return Response.json({ error: "templateId is required" }, { status: 400 });
   }
   try {
-    await deletePromptTemplate(templateId);
+    await deletePromptTemplate(templateId, { ownerUserId: principal.userId });
     return Response.json({ ok: true });
   } catch (error) {
     logger.error("api:prompt-templates", "删除模板失败", {

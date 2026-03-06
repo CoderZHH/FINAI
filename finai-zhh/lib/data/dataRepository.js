@@ -22,23 +22,20 @@ const BASELINE_MODEL_ID = "btc_benchmark";
 const BASELINE_MODEL_PREFIX = "btc_benchmark";
 const DEFAULT_MODEL_ICON = "icon:gpt";
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+const ROOT_USERNAME = process.env.FINAI_ROOT_USERNAME || "root";
 let promptTemplateSchemaEnsured = false;
 let agentModelSchemaEnsured = false;
 const BINANCE_API_BASE = requireEnv("BINANCE_API_BASE");
-const MARKET_UNIVERSE_TOP_N = Math.max(
-  0,
-  Number(process.env.MARKET_UNIVERSE_TOP_N ?? 200)
-);
-const MARKET_UNIVERSE_REFRESH_MS = Math.max(
-  60_000,
-  Number(process.env.MARKET_UNIVERSE_REFRESH_MS ?? 10 * 60 * 1000)
-);
-const marketUniverseState = globalThis.__marketUniverseState ?? {
-  lastSyncTs: 0,
-};
-globalThis.__marketUniverseState = marketUniverseState;
-
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
+const ENV_SYMBOLS = parseSeedSymbols(
+  process.env.SEED_SYMBOLS,
+  getDefaultSeedSymbols()
+);
+const rootUserCache = globalThis.__rootUserCache ?? {
+  id: null,
+  ts: 0,
+};
+globalThis.__rootUserCache = rootUserCache;
 
 function isBaselineModelId(modelId) {
   return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
@@ -56,6 +53,35 @@ export function getTrackedSymbols() {
   return Array.from(new Set(modelSymbols.map(normalizeSymbol)));
 }
 
+async function getRootUserId(options = {}) {
+  const { client = null, force = false } = options;
+  const now = Date.now();
+  if (!force && rootUserCache.id && now - rootUserCache.ts < 60_000) {
+    return rootUserCache.id;
+  }
+  const executor = client ?? getPool();
+  try {
+    const { rows } = await executor.query(
+      `
+      SELECT id
+      FROM users
+      WHERE username = $1
+      LIMIT 1
+      `,
+      [ROOT_USERNAME]
+    );
+    const id = rows[0]?.id ?? null;
+    rootUserCache.id = id;
+    rootUserCache.ts = now;
+    return id;
+  } catch (error) {
+    if (error?.code === "42P01") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function ensurePromptTemplateSchema() {
   if (promptTemplateSchemaEnsured) return;
   const pool = getPool();
@@ -63,8 +89,38 @@ async function ensurePromptTemplateSchema() {
     await pool.query(`
       ALTER TABLE IF EXISTS prompt_templates
         ADD COLUMN IF NOT EXISTS sample_market_state_text TEXT,
-        ADD COLUMN IF NOT EXISTS sample_position_state_text TEXT
+        ADD COLUMN IF NOT EXISTS sample_position_state_text TEXT,
+        ADD COLUMN IF NOT EXISTS owner_user_id UUID
     `);
+    await pool.query(`
+      ALTER TABLE IF EXISTS prompt_templates
+      DROP CONSTRAINT IF EXISTS prompt_templates_template_name_key
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS prompt_templates_owner_idx
+      ON prompt_templates(owner_user_id)
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS prompt_templates_owner_name_uidx
+      ON prompt_templates(owner_user_id, template_name)
+      WHERE owner_user_id IS NOT NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS prompt_templates_owner_default_uidx
+      ON prompt_templates(owner_user_id)
+      WHERE owner_user_id IS NOT NULL AND is_default = TRUE
+    `);
+    const rootId = await getRootUserId();
+    if (rootId) {
+      await pool.query(
+        `
+        UPDATE prompt_templates
+        SET owner_user_id = $1
+        WHERE owner_user_id IS NULL
+        `,
+        [rootId]
+      );
+    }
     promptTemplateSchemaEnsured = true;
   } catch (error) {
     logger.error("dataRepository", "确保 prompt_templates 表结构失败", {
@@ -427,6 +483,7 @@ function mapPromptTemplateRow(row, options = {}) {
   const includeContent = options.includeContent !== false;
   const base = {
     id: row.id,
+    owner_user_id: row.owner_user_id ?? null,
     template_name: row.template_name,
     description: row.description ?? "",
     placeholder_tokens: row.placeholder_tokens ?? [],
@@ -546,6 +603,31 @@ export async function getLatestMarketHistoryTimestamp(symbol, timeframe) {
   if (!ts) return null;
   const ms = new Date(ts).getTime();
   return Number.isFinite(ms) ? ms : null;
+}
+
+export async function getSymbolsMissingMarketHistory(symbols = [], timeframe = "1m") {
+  const normalized = Array.from(
+    new Set(
+      (symbols ?? [])
+        .map((symbol) => ensureMarketSymbol(symbol))
+        .filter(Boolean)
+    )
+  );
+  if (!normalized.length) return [];
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `
+    SELECT DISTINCT symbol
+    FROM market_price_history
+    WHERE timeframe = $1
+      AND symbol = ANY($2)
+    `,
+    [timeframe, normalized]
+  );
+  const existing = new Set(rows.map((row) => String(row.symbol ?? "").toUpperCase()));
+  return normalized
+    .filter((symbol) => !existing.has(String(symbol).toUpperCase()))
+    .map((symbol) => String(symbol).toUpperCase().replace(/USDT$/i, ""));
 }
 
 export async function getTickerRows() {
@@ -930,15 +1012,18 @@ export async function getAgentModelById(
   return mapModelRow(rows[0], { includeSecrets });
 }
 
-async function resolvePromptTemplate(templateId) {
+async function resolvePromptTemplate(templateId, ownerUserId) {
   if (templateId) {
-    const template = await getPromptTemplateById(templateId);
+    const template = await getPromptTemplateById(templateId, {
+      ownerUserId,
+      includeShared: true,
+    });
     if (!template) {
       throw new Error("指定的提示词模板不存在。");
     }
     return template;
   }
-  const fallback = await getDefaultPromptTemplate();
+  const fallback = await getDefaultPromptTemplate({ ownerUserId });
   if (!fallback) {
     throw new Error("尚未配置默认提示词模板。");
   }
@@ -969,7 +1054,7 @@ export async function createAgentModel(payload) {
     throw new Error("owner_user_id is required.");
   }
 
-  const template = await resolvePromptTemplate(prompt_template_id);
+  const template = await resolvePromptTemplate(prompt_template_id, owner_user_id);
 
   const sanitizedInterval = Number.isFinite(Number(auto_run_interval_minutes))
     ? Math.max(1, Number(auto_run_interval_minutes))
@@ -1060,7 +1145,10 @@ export async function updateAgentModel(modelId, updates, { ownerUserId = null } 
 
   if (Object.prototype.hasOwnProperty.call(nextUpdates, "prompt_template_id")) {
     if (nextUpdates.prompt_template_id) {
-      const template = await getPromptTemplateById(nextUpdates.prompt_template_id);
+      const template = await getPromptTemplateById(nextUpdates.prompt_template_id, {
+        ownerUserId,
+        includeShared: true,
+      });
       if (!template) {
         throw new Error("指定的提示词模板不存在。");
       }
@@ -1203,66 +1291,220 @@ export async function getAgentAccounts({ ownerUserId = null } = {}) {
 }
 
 export async function listPromptTemplates(options = {}) {
-  const { includeContent = true } = options;
+  const { includeContent = true, ownerUserId = null } = options;
   const pool = getPool();
   await ensurePromptTemplateSchema();
-  const { rows } = await pool.query(
-    `
-    SELECT *
-    FROM prompt_templates
-    ORDER BY template_name
-    `
-  );
+  let rows = [];
+  if (!ownerUserId) {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      ORDER BY template_name
+      `
+    );
+    rows = result.rows;
+  } else {
+    const rootUserId = await getRootUserId();
+    if (rootUserId && rootUserId !== ownerUserId) {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM prompt_templates
+        WHERE owner_user_id = $1 OR owner_user_id = $2
+        ORDER BY
+          CASE WHEN owner_user_id = $1 THEN 0 ELSE 1 END,
+          is_default DESC,
+          template_name
+        `,
+        [ownerUserId, rootUserId]
+      );
+      rows = result.rows;
+    } else {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM prompt_templates
+        WHERE owner_user_id = $1
+        ORDER BY is_default DESC, template_name
+        `,
+        [ownerUserId]
+      );
+      rows = result.rows;
+    }
+  }
+  if (ownerUserId && rows.length) {
+    const dedupByName = new Map();
+    rows.forEach((row) => {
+      const key = String(row.template_name ?? "").trim();
+      if (!key) return;
+      if (!dedupByName.has(key)) {
+        dedupByName.set(key, row);
+      }
+    });
+    rows = Array.from(dedupByName.values());
+  }
   return rows.map((row) => mapPromptTemplateRow(row, { includeContent }));
 }
 
 export async function getPromptTemplateById(templateId, options = {}) {
   if (!templateId) return null;
-  const { includeContent = true } = options;
+  const {
+    includeContent = true,
+    ownerUserId = null,
+    includeShared = true,
+  } = options;
   const pool = getPool();
   await ensurePromptTemplateSchema();
-  const { rows } = await pool.query(
-    `
-    SELECT *
-    FROM prompt_templates
-    WHERE id = $1
-    `,
-    [templateId]
-  );
+  let rows = [];
+  if (!ownerUserId) {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      WHERE id = $1
+      `,
+      [templateId]
+    );
+    rows = result.rows;
+  } else if (includeShared) {
+    const rootUserId = await getRootUserId();
+    if (rootUserId && rootUserId !== ownerUserId) {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM prompt_templates
+        WHERE id = $1
+          AND (owner_user_id = $2 OR owner_user_id = $3)
+        `,
+        [templateId, ownerUserId, rootUserId]
+      );
+      rows = result.rows;
+    } else {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM prompt_templates
+        WHERE id = $1 AND owner_user_id = $2
+        `,
+        [templateId, ownerUserId]
+      );
+      rows = result.rows;
+    }
+  } else {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      WHERE id = $1 AND owner_user_id = $2
+      `,
+      [templateId, ownerUserId]
+    );
+    rows = result.rows;
+  }
   if (!rows.length) return null;
   return mapPromptTemplateRow(rows[0], { includeContent });
 }
 
 export async function getDefaultPromptTemplate(options = {}) {
-  const { includeContent = true } = options;
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `
-    SELECT *
-    FROM prompt_templates
-    WHERE is_default = TRUE
-    ORDER BY updated_at DESC
-    LIMIT 1
-    `
-  );
-  if (rows.length) {
-    return mapPromptTemplateRow(rows[0], { includeContent });
-  }
-  const fallback = await pool.query(
-    `
-    SELECT *
-    FROM prompt_templates
-    ORDER BY updated_at DESC
-    LIMIT 1
-    `
-  );
-  if (!fallback.rows.length) return null;
-  return mapPromptTemplateRow(fallback.rows[0], { includeContent });
-}
-
-export async function createPromptTemplate(payload) {
+  const { includeContent = true, ownerUserId = null } = options;
   const pool = getPool();
   await ensurePromptTemplateSchema();
+  if (!ownerUserId) {
+    const { rows } = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      WHERE is_default = TRUE
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `
+    );
+    if (rows.length) {
+      return mapPromptTemplateRow(rows[0], { includeContent });
+    }
+    const fallback = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `
+    );
+    if (!fallback.rows.length) return null;
+    return mapPromptTemplateRow(fallback.rows[0], { includeContent });
+  }
+
+  const ownDefault = await pool.query(
+    `
+    SELECT *
+    FROM prompt_templates
+    WHERE owner_user_id = $1 AND is_default = TRUE
+    ORDER BY updated_at DESC
+    LIMIT 1
+    `,
+    [ownerUserId]
+  );
+  if (ownDefault.rows.length) {
+    return mapPromptTemplateRow(ownDefault.rows[0], { includeContent });
+  }
+
+  const rootUserId = await getRootUserId();
+  if (rootUserId && rootUserId !== ownerUserId) {
+    const rootDefault = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      WHERE owner_user_id = $1 AND is_default = TRUE
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `,
+      [rootUserId]
+    );
+    if (rootDefault.rows.length) {
+      return mapPromptTemplateRow(rootDefault.rows[0], { includeContent });
+    }
+  }
+
+  const ownFallback = await pool.query(
+    `
+    SELECT *
+    FROM prompt_templates
+    WHERE owner_user_id = $1
+    ORDER BY updated_at DESC
+    LIMIT 1
+    `,
+    [ownerUserId]
+  );
+  if (ownFallback.rows.length) {
+    return mapPromptTemplateRow(ownFallback.rows[0], { includeContent });
+  }
+
+  if (rootUserId && rootUserId !== ownerUserId) {
+    const rootFallback = await pool.query(
+      `
+      SELECT *
+      FROM prompt_templates
+      WHERE owner_user_id = $1
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `,
+      [rootUserId]
+    );
+    if (rootFallback.rows.length) {
+      return mapPromptTemplateRow(rootFallback.rows[0], { includeContent });
+    }
+  }
+  return null;
+}
+
+export async function createPromptTemplate(payload, options = {}) {
+  const { ownerUserId = null } = options;
+  const pool = getPool();
+  await ensurePromptTemplateSchema();
+  if (!ownerUserId) {
+    throw new Error("ownerUserId is required.");
+  }
   const {
     template_name,
     description = "",
@@ -1277,6 +1519,7 @@ export async function createPromptTemplate(payload) {
   if (!template_name || !template_name.trim()) {
     throw new Error("template_name 不能为空。");
   }
+  const trimmedName = template_name.trim();
 
   const tokens =
     Array.isArray(placeholder_tokens) && placeholder_tokens.length
@@ -1287,11 +1530,19 @@ export async function createPromptTemplate(payload) {
   try {
     await client.query("BEGIN");
     if (is_default) {
-      await client.query(`UPDATE prompt_templates SET is_default = FALSE WHERE is_default = TRUE`);
+      await client.query(
+        `
+        UPDATE prompt_templates
+        SET is_default = FALSE
+        WHERE owner_user_id = $1 AND is_default = TRUE
+        `,
+        [ownerUserId]
+      );
     }
     const { rows } = await client.query(
       `
       INSERT INTO prompt_templates (
+        owner_user_id,
         template_name,
         description,
         system_prompt,
@@ -1301,11 +1552,12 @@ export async function createPromptTemplate(payload) {
         sample_position_state_text,
         is_default
       )
-      VALUES ($1,$2,$3,$4,$5::text[],$6,$7,$8)
+      VALUES ($1,$2,$3,$4,$5,$6::text[],$7,$8,$9)
       RETURNING *
       `,
       [
-        template_name.trim(),
+        ownerUserId,
+        trimmedName,
         description ?? "",
         system_prompt,
         user_prompt,
@@ -1319,19 +1571,29 @@ export async function createPromptTemplate(payload) {
     return mapPromptTemplateRow(rows[0]);
   } catch (error) {
     await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      throw new Error("同名模板已存在，请更换模板名称。");
+    }
     throw error;
   } finally {
     client.release();
   }
 }
 
-export async function updatePromptTemplate(templateId, updates) {
+export async function updatePromptTemplate(templateId, updates, options = {}) {
+  const { ownerUserId = null } = options;
   if (!templateId) {
     throw new Error("templateId is required.");
   }
+  if (!ownerUserId) {
+    throw new Error("ownerUserId is required.");
+  }
   const pool = getPool();
   await ensurePromptTemplateSchema();
-  const existing = await getPromptTemplateById(templateId);
+  const existing = await getPromptTemplateById(templateId, {
+    ownerUserId,
+    includeShared: true,
+  });
   if (!existing) {
     throw new Error("提示词模板不存在。");
   }
@@ -1377,23 +1639,77 @@ export async function updatePromptTemplate(templateId, updates) {
     return existing;
   }
 
+  if (existing.owner_user_id !== ownerUserId) {
+    const clonedTemplate = await createPromptTemplate(
+      {
+        template_name:
+          typeof nextUpdates.template_name === "string"
+            ? nextUpdates.template_name
+            : existing.template_name,
+        description:
+          typeof nextUpdates.description === "string"
+            ? nextUpdates.description
+            : existing.description,
+        system_prompt:
+          typeof nextUpdates.system_prompt === "string"
+            ? nextUpdates.system_prompt
+            : existing.system_prompt,
+        user_prompt:
+          typeof nextUpdates.user_prompt === "string"
+            ? nextUpdates.user_prompt
+            : existing.user_prompt,
+        placeholder_tokens: Array.isArray(nextUpdates.placeholder_tokens)
+          ? nextUpdates.placeholder_tokens
+          : existing.placeholder_tokens ?? [],
+        sample_market_state_text:
+          typeof nextUpdates.sample_market_state_text === "string"
+            ? nextUpdates.sample_market_state_text
+            : existing.sample_market_state_text ?? "",
+        sample_position_state_text:
+          typeof nextUpdates.sample_position_state_text === "string"
+            ? nextUpdates.sample_position_state_text
+            : existing.sample_position_state_text ?? "",
+        is_default: Object.prototype.hasOwnProperty.call(nextUpdates, "is_default")
+          ? Boolean(nextUpdates.is_default)
+          : Boolean(existing.is_default),
+      },
+      { ownerUserId }
+    );
+    await pool.query(
+      `
+      UPDATE agent_models
+      SET prompt_template_id = $1, updated_at = now()
+      WHERE owner_user_id = $2 AND prompt_template_id = $3
+      `,
+      [clonedTemplate.id, ownerUserId, templateId]
+    );
+    return getPromptTemplateById(clonedTemplate.id, {
+      ownerUserId,
+      includeShared: false,
+    });
+  }
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     if (nextUpdates.is_default === true) {
       await client.query(
-        `UPDATE prompt_templates SET is_default = FALSE WHERE is_default = TRUE AND id <> $1`,
-        [templateId]
+        `
+        UPDATE prompt_templates
+        SET is_default = FALSE
+        WHERE owner_user_id = $1 AND is_default = TRUE AND id <> $2
+        `,
+        [ownerUserId, templateId]
       );
     }
     const { rows } = await client.query(
       `
       UPDATE prompt_templates
       SET ${fields.join(", ")}, updated_at = now()
-      WHERE id = $${idx}
+      WHERE id = $${idx} AND owner_user_id = $${idx + 1}
       RETURNING *
       `,
-      [...values, templateId]
+      [...values, templateId, ownerUserId]
     );
     await client.query("COMMIT");
     if (!rows.length) {
@@ -1402,18 +1718,28 @@ export async function updatePromptTemplate(templateId, updates) {
     return mapPromptTemplateRow(rows[0]);
   } catch (error) {
     await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      throw new Error("同名模板已存在，请更换模板名称。");
+    }
     throw error;
   } finally {
     client.release();
   }
 }
 
-export async function deletePromptTemplate(templateId) {
+export async function deletePromptTemplate(templateId, options = {}) {
+  const { ownerUserId = null } = options;
   if (!templateId) {
     throw new Error("templateId is required.");
   }
+  if (!ownerUserId) {
+    throw new Error("ownerUserId is required.");
+  }
   const pool = getPool();
-  const template = await getPromptTemplateById(templateId);
+  const template = await getPromptTemplateById(templateId, {
+    ownerUserId,
+    includeShared: false,
+  });
   if (!template) {
     return false;
   }
@@ -1424,9 +1750,9 @@ export async function deletePromptTemplate(templateId) {
     `
     SELECT COUNT(*)::int AS usage_count
     FROM agent_models
-    WHERE prompt_template_id = $1
+    WHERE prompt_template_id = $1 AND owner_user_id = $2
     `,
-    [templateId]
+    [templateId, ownerUserId]
   );
   if (rows[0].usage_count > 0) {
     throw new Error("仍有模型正在使用该模板，无法删除。");
@@ -1434,9 +1760,9 @@ export async function deletePromptTemplate(templateId) {
   await pool.query(
     `
     DELETE FROM prompt_templates
-    WHERE id = $1
+    WHERE id = $1 AND owner_user_id = $2
     `,
-    [templateId]
+    [templateId, ownerUserId]
   );
   return true;
 }
@@ -2882,10 +3208,13 @@ export async function countAgentLogs(modelId) {
  * @returns {Promise<number>} 更新的交易对数量
  */
 export async function updateMarketPricesFromBinance(options = {}) {
-  const forceUniverseRefresh = Boolean(options?.forceUniverseRefresh);
+  void options;
   await loadAllModelAllowedSymbols();
   const symbols = getTrackedSymbols();
   const pool = getPool();
+  if (!symbols.length) {
+    return 0;
+  }
 
   try {
     const fetch = (await import("node-fetch")).default;
@@ -2907,28 +3236,7 @@ export async function updateMarketPricesFromBinance(options = {}) {
     const trackedTickers = allUsdtTickers.filter((t) =>
       trackedSet.has(String(t.symbol || "").toUpperCase())
     );
-    const now = Date.now();
-    const shouldRefreshUniverse =
-      MARKET_UNIVERSE_TOP_N > 0 &&
-      (forceUniverseRefresh ||
-        now - (marketUniverseState.lastSyncTs ?? 0) >= MARKET_UNIVERSE_REFRESH_MS);
-
-    let targetTickers = trackedTickers;
-    if (shouldRefreshUniverse) {
-      const topUniverse = [...allUsdtTickers]
-        .sort(
-          (a, b) =>
-            Number(b.quoteVolume ?? b.volume ?? 0) -
-            Number(a.quoteVolume ?? a.volume ?? 0)
-        )
-        .slice(0, MARKET_UNIVERSE_TOP_N);
-      const dedup = new Map();
-      [...trackedTickers, ...topUniverse].forEach((t) => {
-        dedup.set(String(t.symbol || "").toUpperCase(), t);
-      });
-      targetTickers = Array.from(dedup.values());
-    }
-    if (!targetTickers.length) {
+    if (!trackedTickers.length) {
       logger.info("dataRepository", "行情价格更新跳过：无待同步币种", {
         tracked: symbols.length,
       });
@@ -2936,7 +3244,7 @@ export async function updateMarketPricesFromBinance(options = {}) {
     }
 
     let updated = 0;
-    for (const ticker of targetTickers) {
+    for (const ticker of trackedTickers) {
       const storageSymbol = ticker.symbol;
       await pool.query(
         `
@@ -2965,15 +3273,10 @@ export async function updateMarketPricesFromBinance(options = {}) {
       );
       updated++;
     }
-    if (shouldRefreshUniverse) {
-      marketUniverseState.lastSyncTs = now;
-    }
 
     logger.info("dataRepository", "行情价格更新完成", {
       updated,
       tracked: symbols.length,
-      universe_refreshed: shouldRefreshUniverse,
-      universe_top_n: shouldRefreshUniverse ? MARKET_UNIVERSE_TOP_N : 0,
     });
     return updated;
   } catch (error) {

@@ -6,6 +6,7 @@ import {
 import {
   updateMarketPricesFromBinance,
   loadAllModelAllowedSymbols,
+  getSymbolsMissingMarketHistory,
 } from "../../../../lib/data/dataRepository";
 import { isModelRunning } from "../../../../lib/trading/autoRunner";
 import { logger } from "../../../../lib/infrastructure/logManager.js";
@@ -54,9 +55,7 @@ function compactModelResponse(model) {
 }
 
 const BINANCE_FAPI_BASE = (() => {
-  const base = process.env.BINANCE_FAPI_BASE;
-  if (!base) throw new Error("BINANCE_FAPI_BASE is required.");
-  return base;
+  return process.env.BINANCE_FAPI_BASE || "https://fapi.binance.com";
 })();
 const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
 const BINANCE_API_SECRET = process.env.BINANCE_API_SECRET;
@@ -369,15 +368,18 @@ export async function PUT(request, context) {
     const model = await updateAgentModel(modelId, updates, {
       ownerUserId: principal.userId,
     });
-    // 如果新增了币种，自动同步风险分层与资金费
+    // 如果新增了币种，只对“数据库尚无历史行情”的币执行导入与风险/资金费同步
     if (updates.allowed_symbols) {
       const previousSet = new Set(previousSymbols);
       const newSymbols = updates.allowed_symbols.filter((s) => !previousSet.has(s));
       if (newSymbols.length) {
         try {
-          await importMarketData(newSymbols);
-          await syncRiskForSymbols(newSymbols);
-          await syncFundingForSymbols(newSymbols);
+          const symbolsToImport = await getSymbolsMissingMarketHistory(newSymbols, "1m");
+          if (symbolsToImport.length) {
+            await importMarketData(symbolsToImport);
+            await syncRiskForSymbols(symbolsToImport);
+            await syncFundingForSymbols(symbolsToImport);
+          }
         } catch (syncErr) {
           logger.warn("api/models", "auto sync risk/funding failed", {
             error: syncErr?.message,

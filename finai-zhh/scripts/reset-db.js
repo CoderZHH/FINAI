@@ -53,9 +53,12 @@ function extractPlaceholderTokens(...payloads) {
   return Array.from(tokens);
 }
 
-async function seedDefaultPromptTemplate(pool) {
+async function seedDefaultPromptTemplate(pool, rootUserId) {
   const systemPrompt = await loadPromptFile("系统提示词.md");
   const userPrompt = await loadPromptFile("模板字符串.md");
+  if (!rootUserId) {
+    throw new Error("root user id is required before seeding prompt template");
+  }
 
   if (!systemPrompt || !userPrompt) {
     logger.warn(LOG_MODULE, "[reset-db] 默认提示词文件为空，跳过默认模板创建。");
@@ -67,6 +70,7 @@ async function seedDefaultPromptTemplate(pool) {
   const { rows } = await pool.query(
     `
     INSERT INTO prompt_templates (
+      owner_user_id,
       template_name,
       description,
       system_prompt,
@@ -74,8 +78,8 @@ async function seedDefaultPromptTemplate(pool) {
       placeholder_tokens,
       is_default
     )
-    VALUES ($1,$2,$3,$4,$5::text[],TRUE)
-    ON CONFLICT (template_name) DO UPDATE
+    VALUES ($1,$2,$3,$4,$5,$6::text[],TRUE)
+    ON CONFLICT (owner_user_id, template_name) DO UPDATE
     SET
       description = EXCLUDED.description,
       system_prompt = EXCLUDED.system_prompt,
@@ -86,6 +90,7 @@ async function seedDefaultPromptTemplate(pool) {
     RETURNING id
     `,
     [
+      rootUserId,
       "默认多因子策略模板",
       "来自模板字符串/系统提示词文件的默认组合。",
       systemPrompt,
@@ -140,7 +145,7 @@ async function seedRootUser(pool) {
   const rootUsername = process.env.FINAI_ROOT_USERNAME || "root";
   const rootPassword = process.env.FINAI_ROOT_PASSWORD || "root";
   const rootPasswordHash = hashPassword(rootPassword);
-  await pool.query(
+  const { rows } = await pool.query(
     `
     INSERT INTO users (username, password_hash, role)
     VALUES ($1, $2, 'SUPER_ADMIN')
@@ -148,10 +153,12 @@ async function seedRootUser(pool) {
     SET role = EXCLUDED.role,
         password_hash = EXCLUDED.password_hash,
         updated_at = now()
+    RETURNING id
     `,
     [rootUsername, rootPasswordHash]
   );
   logger.info(LOG_MODULE, "root user ensured.", { username: rootUsername });
+  return rows[0]?.id ?? null;
 }
 
 async function dropExistingTables(pool) {
@@ -211,7 +218,8 @@ async function ensureSchema(pool) {
   await pool.query(`
     CREATE TABLE prompt_templates (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      template_name TEXT UNIQUE NOT NULL,
+      owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      template_name TEXT NOT NULL,
       description TEXT,
       system_prompt TEXT NOT NULL,
       user_prompt TEXT NOT NULL,
@@ -220,8 +228,15 @@ async function ensureSchema(pool) {
       sample_position_state_text TEXT,
       is_default BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now()
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE (owner_user_id, template_name)
     );
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX prompt_templates_owner_default_uidx
+    ON prompt_templates(owner_user_id)
+    WHERE is_default = TRUE;
   `);
 
   await pool.query(`
@@ -470,11 +485,11 @@ export async function main() {
     logger.info(LOG_MODULE, "Truncating tables...");
     await truncateTables(pool);
 
-    logger.info(LOG_MODULE, "Seeding default prompt template...");
-    await seedDefaultPromptTemplate(pool);
-
     logger.info(LOG_MODULE, "Seeding root user...");
-    await seedRootUser(pool);
+    const rootUserId = await seedRootUser(pool);
+
+    logger.info(LOG_MODULE, "Seeding default prompt template...");
+    await seedDefaultPromptTemplate(pool, rootUserId);
 
     logger.info(LOG_MODULE, "Seeding risk limits...");
     await seedRiskLimits(pool);

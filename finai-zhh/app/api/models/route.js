@@ -3,10 +3,10 @@ import {
   createAgentModel,
   listAgentModels,
   loadAllModelAllowedSymbols,
+  getSymbolsMissingMarketHistory,
   updateMarketPricesFromBinance,
 } from "../../../lib/data/dataRepository";
-import { importMarketData, syncLatestMarketData } from "../../../lib/market/marketImporter.js";
-import { getLatestMarketHistoryTimestamp } from "../../../lib/data/dataRepository.js";
+import { importMarketData } from "../../../lib/market/marketImporter.js";
 import { logger } from "@/lib/infrastructure/logManager";
 import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 
@@ -151,32 +151,26 @@ export async function POST(request) {
     }
 
     const model = await createAgentModel(cleanPayload);
-    // 冷启动：导入历史行情并同步风险/资金费（已有历史则只补增量）
+    // 仅对“库里尚无历史数据”的新增币种执行导入与风控同步
     try {
-      const symbols = cleanPayload.allowed_symbols;
-      const symbolsNeedingFull = [];
-      const symbolsNeedingSync = [];
-      for (const sym of symbols) {
-        const lastTs = await getLatestMarketHistoryTimestamp(sym, "1m");
-        if (lastTs) {
-          symbolsNeedingSync.push(sym);
-        } else {
-          symbolsNeedingFull.push(sym);
-        }
+      const symbolsToImport = await getSymbolsMissingMarketHistory(
+        cleanPayload.allowed_symbols,
+        "1m"
+      );
+      if (symbolsToImport.length) {
+        await importMarketData(symbolsToImport);
+        const symbolParam = encodeURIComponent(symbolsToImport.join(","));
+        const internalBase =
+          process.env.INTERNAL_API_BASE_URL ||
+          process.env.NEXT_PUBLIC_BASE_URL ||
+          new URL(request.url).origin;
+        await fetch(`${internalBase}/api/binance/risk?symbols=${symbolParam}`, {
+          method: "POST",
+        });
+        await fetch(`${internalBase}/api/binance/funding?symbols=${symbolParam}`, {
+          method: "POST",
+        });
       }
-      if (symbolsNeedingFull.length) {
-        await importMarketData(symbolsNeedingFull);
-      }
-      if (symbolsNeedingSync.length) {
-        await syncLatestMarketData(symbolsNeedingSync);
-      }
-      const symbolParam = encodeURIComponent(cleanPayload.allowed_symbols.join(","));
-      const internalBase =
-        process.env.INTERNAL_API_BASE_URL ||
-        process.env.NEXT_PUBLIC_BASE_URL ||
-        new URL(request.url).origin;
-      await fetch(`${internalBase}/api/binance/risk?symbols=${symbolParam}`, { method: "POST" });
-      await fetch(`${internalBase}/api/binance/funding?symbols=${symbolParam}`, { method: "POST" });
     } catch (seedErr) {
       logger.warn("api:models", "冷启动行情/风险同步失败", { error: seedErr?.message });
     }
