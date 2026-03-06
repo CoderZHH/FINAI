@@ -3518,6 +3518,20 @@ export async function ensureUserBaseline(ownerUserId) {
       `,
       [modelId, BASELINE_DISPLAY_ICON, userId]
     );
+    // 修正历史遗留：同一用户下所有 baseline-like 记录统一成 BTC 图标
+    await pool.query(
+      `
+      UPDATE agent_models
+      SET display_icon = $2,
+          updated_at = now()
+      WHERE owner_user_id = $1
+        AND (
+          model_id ILIKE 'btc_benchmark%'
+          OR lower(display_name) = 'btc benchmark'
+        )
+      `,
+      [userId, BASELINE_DISPLAY_ICON]
+    );
     return getAgentModelById(modelId, { includeSecrets: false, ownerUserId: userId });
   }
 

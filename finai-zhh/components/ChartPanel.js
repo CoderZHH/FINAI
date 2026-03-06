@@ -210,8 +210,17 @@ function deriveLegend(seriesMeta, iconLookup) {
   });
 }
 
+function findLastFiniteValue(rows, lineKey) {
+  if (!Array.isArray(rows) || !lineKey) return NaN;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const v = Number(rows[i]?.[lineKey]);
+    if (Number.isFinite(v)) return v;
+  }
+  return NaN;
+}
+
 /** 下方卡片（与图表系列保持一致） */
-function deriveCards(models, legendData) {
+function deriveCards(models, legendData, chartRows) {
   const modelById = new Map();
   (models ?? []).forEach((model) => {
     const modelId = String(model?.model_id ?? "");
@@ -225,7 +234,13 @@ function deriveCards(models, legendData) {
       if (!modelId) return null;
       const model = modelById.get(modelId) ?? {};
       const isBenchmark = Boolean(entry?.isBenchmark) || isBaselineModelId(modelId);
-      const latest = Number(entry?.latestDollar ?? NaN);
+      let latest = Number(entry?.latestDollar ?? NaN);
+      if (!Number.isFinite(latest)) {
+        latest = findLastFiniteValue(chartRows, entry?.lineKey);
+      }
+      if (!Number.isFinite(latest)) {
+        latest = Number(model?.latest_equity ?? NaN);
+      }
       if (!Number.isFinite(latest)) return null;
 
       const modelStarting = Number(model.starting_equity ?? NaN);
@@ -258,7 +273,12 @@ function deriveCards(models, legendData) {
         isBenchmark,
       };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.isBenchmark && !b.isBenchmark) return -1;
+      if (!a.isBenchmark && b.isBenchmark) return 1;
+      return String(a.name ?? "").localeCompare(String(b.name ?? ""));
+    });
 }
 
 export default function ChartPanel() {
@@ -336,8 +356,9 @@ export default function ChartPanel() {
           display_icon: resolveIconForModel(model),
         })),
         legendData,
+        chartData,
       ),
-    [modelsData, legendData],
+    [modelsData, legendData, chartData],
   );
 
   const nameLookup = useMemo(() => {
