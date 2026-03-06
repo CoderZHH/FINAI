@@ -681,6 +681,11 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun, readOnly = false 
                 <span className="text-xs font-medium text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md border border-gray-100">
                     {model.model_id}
                 </span>
+                {!model.has_api_key ? (
+                  <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100">
+                    未配置 API Key
+                  </span>
+                ) : null}
             </div>
           </div>
         </div>
@@ -1338,6 +1343,10 @@ export default function ModelsPage() {
       denyGuestAction();
       return;
     }
+    if (!model.auto_run_enabled && !model.has_api_key) {
+      setErrorMessage("请先编辑模型并填写 API Key，再开启自动运行");
+      return;
+    }
     const response = await fetch(`/api/models/${model.model_id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1386,7 +1395,6 @@ export default function ModelsPage() {
       provider: formState.provider?.trim() || null,
       llm_model: formState.llm_model?.trim() || null,
       api_base_url: formState.api_base_url.trim() || null,
-      api_key: formState.api_key?.trim() || null,
       human_review_required: formState.human_review_required,
       auto_run_enabled: formState.auto_run_enabled,
       auto_run_interval_minutes: formState.auto_run_interval_minutes,
@@ -1424,8 +1432,11 @@ export default function ModelsPage() {
       }
     }
 
-    if (formState.api_key.trim()) {
-      payload.api_key = formState.api_key.trim();
+    const apiKeyInput = formState.api_key.trim();
+    if (apiKeyInput) {
+      payload.api_key = apiKeyInput;
+    } else if (!isEdit) {
+      payload.api_key = null;
     }
 
     if (!formState.prompt_template_id) {
