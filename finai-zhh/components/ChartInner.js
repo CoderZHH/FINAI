@@ -71,8 +71,19 @@ function isBaselineModelId(modelId) {
   return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
 }
 
+function isBenchmarkEntry(entry = {}) {
+  const modelId = String(entry.modelId ?? entry.model_id ?? "").toLowerCase();
+  const lineKey = String(entry.lineKey ?? entry.line_key ?? "").toLowerCase();
+  return (
+    Boolean(entry.isBenchmark) ||
+    Boolean(entry.is_benchmark) ||
+    isBaselineModelId(modelId) ||
+    isBaselineModelId(lineKey)
+  );
+}
+
 function getSeriesColor(entry) {
-  if (entry.isBenchmark || isBaselineModelId(entry.modelId)) {
+  if (isBenchmarkEntry(entry)) {
     return SERIES_COLOR_MAP.btc;
   }
   const normalized = entry.iconValue ? normaliseIconValue(entry.iconValue) : null;
@@ -92,7 +103,7 @@ function getContrastColor(rgbString) {
 }
 
 function buildEndLabelConfig(seriesEntry, fillColor, latestValue, formatValue) {
-  const isBenchmark = seriesEntry.isBenchmark || isBaselineModelId(seriesEntry.modelId);
+  const isBenchmark = isBenchmarkEntry(seriesEntry);
   const iconInfo = isBenchmark
     ? { type: "image", src: BTC_ICON, value: "BTC" }
     : resolveModelIcon(seriesEntry.iconValue);
@@ -255,7 +266,7 @@ export default function ChartInner({
           itemStyle: { opacity: 0.15 },
         },
         lineStyle: {
-          width: entry.isBenchmark ? 2.4 : 3, // 基准线稍细
+          width: isBenchmarkEntry(entry) ? 2.4 : 3, // 基准线稍细
           color: seriesColor,
         },
         itemStyle: {

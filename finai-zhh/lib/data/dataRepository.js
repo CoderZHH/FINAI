@@ -3395,7 +3395,13 @@ export async function initializeBtcBenchmark() {
         allowed_symbols
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-      ON CONFLICT (model_id) DO NOTHING
+      ON CONFLICT (model_id) DO UPDATE SET
+        owner_user_id = CASE
+          WHEN EXCLUDED.model_id = 'btc_benchmark' THEN EXCLUDED.owner_user_id
+          ELSE COALESCE(agent_models.owner_user_id, EXCLUDED.owner_user_id)
+        END,
+        display_icon = EXCLUDED.display_icon,
+        updated_at = now()
       `,
       [
         modelId,
@@ -3566,7 +3572,13 @@ export async function ensureUserBaseline(ownerUserId) {
         allowed_symbols
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-      ON CONFLICT (model_id) DO NOTHING
+      ON CONFLICT (model_id) DO UPDATE SET
+        owner_user_id = CASE
+          WHEN EXCLUDED.model_id = 'btc_benchmark' THEN EXCLUDED.owner_user_id
+          ELSE COALESCE(agent_models.owner_user_id, EXCLUDED.owner_user_id)
+        END,
+        display_icon = EXCLUDED.display_icon,
+        updated_at = now()
       `,
       [
         modelId,

@@ -98,14 +98,12 @@ function isBaselineModelId(modelId) {
 
 function isLikelyBenchmark(seriesOrModel = {}) {
   const modelId = String(seriesOrModel?.model_id ?? seriesOrModel?.modelId ?? "").toLowerCase();
-  const name = String(seriesOrModel?.name ?? seriesOrModel?.display_name ?? "").toLowerCase();
+  const lineKey = String(seriesOrModel?.line_key ?? seriesOrModel?.lineKey ?? "").toLowerCase();
   return (
     Boolean(seriesOrModel?.is_benchmark) ||
+    Boolean(seriesOrModel?.isBenchmark) ||
     isBaselineModelId(modelId) ||
-    modelId.includes("benchmark") ||
-    modelId.includes("buyhold") ||
-    name.includes("benchmark") ||
-    name.includes("buy&hold")
+    isBaselineModelId(lineKey)
   );
 }
 
@@ -191,6 +189,7 @@ function deriveChartData(seriesMeta, viewMode) {
 /** 右侧 legend / 每条线的配置 */
 function deriveLegend(seriesMeta, iconLookup) {
   return seriesMeta.map((series) => {
+    const isBenchmark = isLikelyBenchmark(series);
     const latest = series.points.at(-1) ?? {
       dollar_equity: 0,
       cum_pnl_pct: 0,
@@ -199,14 +198,14 @@ function deriveLegend(seriesMeta, iconLookup) {
       lineKey: series.line_key,
       modelId: series.model_id,
       name: series.name,
-      color: series.color,
+      color: isBenchmark ? BASELINE_COLOR : series.color,
       iconValue:
         iconLookup?.get(series.model_id) ??
         series.icon ??
         series.iconValue ??
         null,
       strokeDasharray: series.strokeDasharray,
-      isBenchmark: isLikelyBenchmark(series),
+      isBenchmark,
       latestDollar: latest.dollar_equity,
       latestPct: latest.cum_pnl_pct,
     };
@@ -221,71 +220,32 @@ function deriveCards(models, seriesMeta) {
     if (modelId) modelById.set(modelId, model);
   });
 
-  const seriesByModel = new Map();
-  (seriesMeta ?? []).forEach((series) => {
-    const modelId = String(series?.model_id ?? "");
-    if (modelId) seriesByModel.set(modelId, series);
-  });
-
-  const orderedModelIds = [];
-  const seen = new Set();
-  (models ?? []).forEach((model) => {
-    const modelId = String(model?.model_id ?? "");
-    if (!modelId || seen.has(modelId)) return;
-    orderedModelIds.push(modelId);
-    seen.add(modelId);
-  });
-  (seriesMeta ?? []).forEach((series) => {
-    const modelId = String(series?.model_id ?? "");
-    if (!modelId || seen.has(modelId)) return;
-    orderedModelIds.push(modelId);
-    seen.add(modelId);
-  });
-
-  const latestByModel = new Map();
-  (seriesMeta ?? []).forEach((series) => {
-    const latestPoint = series.points?.at(-1) ?? {};
-    latestByModel.set(series.model_id, {
-      latestDollar: Number(latestPoint.dollar_equity ?? 0),
-      pnlPct: Number(latestPoint.cum_pnl_pct ?? 0),
-    });
-  });
-
-  return orderedModelIds
-    .map((modelId) => {
+  // 卡片应与图表系列一一对应：图上有线，就有卡片
+  return (seriesMeta ?? [])
+    .map((series) => {
+      const modelId = String(series?.model_id ?? "");
+      if (!modelId) return null;
       const model = modelById.get(modelId) ?? {};
-      const series = seriesByModel.get(modelId) ?? {};
-      const seriesEntry = latestByModel.get(modelId);
-      if (!seriesEntry) {
-        // 若缺少时间序列，跳过该模型卡片，避免前端直接抛错
-        return null;
-      }
+      const latestPoint = series?.points?.at(-1);
+      if (!latestPoint) return null;
 
-      const isBenchmark = isLikelyBenchmark({
-        ...series,
-        ...model,
-        model_id: modelId,
-      });
-      const latest = Number(seriesEntry.latestDollar ?? NaN);
-      const pctFromSeries = Number(seriesEntry.pnlPct ?? NaN);
-      if (!Number.isFinite(latest) || !Number.isFinite(pctFromSeries)) {
-        return null;
-      }
+      const isBenchmark = isLikelyBenchmark(series);
+      const latest = Number(latestPoint.dollar_equity ?? latestPoint.equity ?? NaN);
+      const pnlPct = Number(latestPoint.cum_pnl_pct ?? NaN);
+      if (!Number.isFinite(latest) || !Number.isFinite(pnlPct)) return null;
 
       // 通过累计收益率反推起始权益
-      const starting = latest / (1 + pctFromSeries);
+      const denominator = 1 + pnlPct;
+      if (!Number.isFinite(denominator) || denominator === 0) return null;
+      const starting = latest / denominator;
       if (!Number.isFinite(starting)) return null;
-      const pnlAbs = latest - starting;
-      const pnlPct = pctFromSeries;
 
       return {
         modelId,
         name: model.display_name ?? series.name ?? modelId,
-        color: isBenchmark
-          ? BASELINE_COLOR
-          : (series.color ?? model.color_hex ?? "#111827"),
+        color: isBenchmark ? BASELINE_COLOR : (series.color ?? model.color_hex ?? "#111827"),
         latestDollar: latest,
-        pnlAbs,
+        pnlAbs: latest - starting,
         pnlPct,
         iconValue: model.display_icon ?? series.icon ?? null,
         isBenchmark,
