@@ -647,7 +647,7 @@ function PositionsPanel({ iconMap }) {
         .trim()
         .toLowerCase();
       if (isBaselineModelId(modelId)) return false;
-      if (displayName === "btc benchmark") return false;
+      if (displayName.includes("benchmark")) return false;
       return true;
     }
   );

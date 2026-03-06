@@ -223,7 +223,7 @@ function deriveCards(models, seriesMeta) {
       if (!modelId) return false;
       if (isBaselineModelId(modelId)) return false;
       if (benchmarkModelIds.has(modelId)) return false;
-      if (displayName === "btc benchmark") return false;
+      if (displayName.includes("benchmark")) return false;
       return true;
     })
     .map((model) => {
