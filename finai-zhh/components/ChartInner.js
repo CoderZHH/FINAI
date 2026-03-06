@@ -68,17 +68,15 @@ const BTC_ICON = "/api/asset-logo?symbol=BTC";
 const BASELINE_MODEL_PREFIX = "btc_benchmark";
 
 function isBaselineModelId(modelId) {
-  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+  return String(modelId ?? "").trim().toLowerCase().startsWith(BASELINE_MODEL_PREFIX);
 }
 
 function isBenchmarkEntry(entry = {}) {
-  const modelId = String(entry.modelId ?? entry.model_id ?? "").toLowerCase();
-  const lineKey = String(entry.lineKey ?? entry.line_key ?? "").toLowerCase();
+  const modelId = String(entry.modelId ?? entry.model_id ?? "");
   return (
     Boolean(entry.isBenchmark) ||
     Boolean(entry.is_benchmark) ||
-    isBaselineModelId(modelId) ||
-    isBaselineModelId(lineKey)
+    isBaselineModelId(modelId)
   );
 }
 

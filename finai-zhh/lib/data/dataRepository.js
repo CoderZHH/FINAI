@@ -39,7 +39,7 @@ const rootUserCache = globalThis.__rootUserCache ?? {
 globalThis.__rootUserCache = rootUserCache;
 
 function isBaselineModelId(modelId) {
-  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+  return String(modelId ?? "").trim().toLowerCase().startsWith(BASELINE_MODEL_PREFIX);
 }
 
 function normalizeAllowedSymbolsList(symbols) {

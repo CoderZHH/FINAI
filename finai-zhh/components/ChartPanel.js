@@ -93,17 +93,15 @@ function resolveIconForModel(model) {
 }
 
 function isBaselineModelId(modelId) {
-  return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+  return String(modelId ?? "").trim().toLowerCase().startsWith(BASELINE_MODEL_PREFIX);
 }
 
 function isLikelyBenchmark(seriesOrModel = {}) {
-  const modelId = String(seriesOrModel?.model_id ?? seriesOrModel?.modelId ?? "").toLowerCase();
-  const lineKey = String(seriesOrModel?.line_key ?? seriesOrModel?.lineKey ?? "").toLowerCase();
+  const modelId = String(seriesOrModel?.model_id ?? seriesOrModel?.modelId ?? "");
   return (
     Boolean(seriesOrModel?.is_benchmark) ||
     Boolean(seriesOrModel?.isBenchmark) ||
-    isBaselineModelId(modelId) ||
-    isBaselineModelId(lineKey)
+    isBaselineModelId(modelId)
   );
 }
 
@@ -189,7 +187,7 @@ function deriveChartData(seriesMeta, viewMode) {
 /** 右侧 legend / 每条线的配置 */
 function deriveLegend(seriesMeta, iconLookup) {
   return seriesMeta.map((series) => {
-    const isBenchmark = isLikelyBenchmark(series);
+    const isBenchmark = Boolean(series?.is_benchmark) || isBaselineModelId(series?.model_id);
     const latest = series.points.at(-1) ?? {
       dollar_equity: 0,
       cum_pnl_pct: 0,
@@ -229,16 +227,28 @@ function deriveCards(models, seriesMeta) {
       const latestPoint = series?.points?.at(-1);
       if (!latestPoint) return null;
 
-      const isBenchmark = isLikelyBenchmark(series);
+      const isBenchmark = Boolean(series?.is_benchmark) || isBaselineModelId(series?.model_id);
       const latest = Number(latestPoint.dollar_equity ?? latestPoint.equity ?? NaN);
-      const pnlPct = Number(latestPoint.cum_pnl_pct ?? NaN);
-      if (!Number.isFinite(latest) || !Number.isFinite(pnlPct)) return null;
+      if (!Number.isFinite(latest)) return null;
 
-      // 通过累计收益率反推起始权益
-      const denominator = 1 + pnlPct;
-      if (!Number.isFinite(denominator) || denominator === 0) return null;
-      const starting = latest / denominator;
-      if (!Number.isFinite(starting)) return null;
+      const modelStarting = Number(model.starting_equity ?? NaN);
+      let pnlPct = Number(latestPoint.cum_pnl_pct ?? NaN);
+      if (!Number.isFinite(pnlPct)) {
+        pnlPct =
+          Number.isFinite(modelStarting) && modelStarting > 0
+            ? latest / modelStarting - 1
+            : 0;
+      }
+
+      let starting = modelStarting;
+      if (!Number.isFinite(starting) || starting <= 0) {
+        const denominator = 1 + pnlPct;
+        starting =
+          Number.isFinite(denominator) && denominator !== 0
+            ? latest / denominator
+            : 10000;
+      }
+      if (!Number.isFinite(starting)) starting = 10000;
 
       return {
         modelId,
@@ -273,7 +283,7 @@ export default function ChartPanel() {
   const seriesMeta = useMemo(
     () =>
       rawSeries.map((series, idx) => {
-        const isBenchmark = isLikelyBenchmark(series);
+        const isBenchmark = Boolean(series?.is_benchmark) || isBaselineModelId(series?.model_id);
         const color = isBenchmark
           ? BASELINE_COLOR
           : (series.color ?? COLOR_PALETTE[idx % COLOR_PALETTE.length]);
@@ -429,42 +439,44 @@ export default function ChartPanel() {
       </div>
 
       {/* 下方卡片区 */}
-      <div className="mt-4 grid grid-cols-1 gap-3 border-t pt-3 text-xs sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
-        {cards.map((item) => (
-          <div
-            key={item.modelId}
-            className="flex flex-col justify-between rounded-xl border border-neutral-300 bg-white px-3 py-2 shadow-sm"
-          >
-            <div className="flex items-center gap-2">
-              <span
-                aria-hidden
-                className="text-base"
-                style={{ color: item.color }}
-              >
-                {item.isBenchmark ? (
-                  <CoinBadge symbol="BTC" size={22} />
-                ) : (
-                  renderIcon(item.iconValue)
-                )}
-              </span>
-              <span className="font-semibold tracking-[0.18em]">
-                {item.name}
-              </span>
-            </div>
-
-            <div className="mono mt-1 text-neutral-900 text-sm">
-              总权益 {formatUsd(item.latestDollar)}
-            </div>
-
+      <div className="mt-4 border-t pt-3 text-xs">
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {cards.map((item) => (
             <div
-              className={`text-[11px] font-semibold ${
-                item.pnlAbs >= 0 ? "text-emerald-600" : "text-rose-600"
-              }`}
+              key={item.modelId}
+              className="flex min-w-[220px] flex-1 flex-col justify-between rounded-xl border border-neutral-300 bg-white px-3 py-2 shadow-sm"
             >
-              累计盈亏 {formatUsd(item.pnlAbs)}（{formatPct(item.pnlPct)}）
+              <div className="flex items-center gap-2">
+                <span
+                  aria-hidden
+                  className="text-base"
+                  style={{ color: item.color }}
+                >
+                  {item.isBenchmark ? (
+                    <CoinBadge symbol="BTC" size={22} />
+                  ) : (
+                    renderIcon(item.iconValue)
+                  )}
+                </span>
+                <span className="font-semibold tracking-[0.18em]">
+                  {item.name}
+                </span>
+              </div>
+
+              <div className="mono mt-1 text-neutral-900 text-sm">
+                总权益 {formatUsd(item.latestDollar)}
+              </div>
+
+              <div
+                className={`text-[11px] font-semibold ${
+                  item.pnlAbs >= 0 ? "text-emerald-600" : "text-rose-600"
+                }`}
+              >
+                累计盈亏 {formatUsd(item.pnlAbs)}（{formatPct(item.pnlPct)}）
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </section>
   );
