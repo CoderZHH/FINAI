@@ -1,10 +1,20 @@
 "use server";
 
+export const preferredRegion = "sin1";
+
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/infrastructure/logManager";
 
 const BINANCE_API_BASE = process.env.BINANCE_API_BASE ?? "https://api.binance.com";
-const BINANCE_24H_URL = `${BINANCE_API_BASE}/api/v3/ticker/24hr`;
+const BINANCE_BASE_CANDIDATES = [
+  BINANCE_API_BASE,
+  "https://api1.binance.com",
+  "https://api2.binance.com",
+  "https://api3.binance.com",
+  "https://api4.binance.com",
+  "https://data-api.binance.vision",
+].filter(Boolean);
+
 const CACHE_KEY = "binance_24h_tickers";
 const CACHE_MS = 45_000;
 const globalCache = globalThis.__binanceTickerCache ?? {
@@ -12,6 +22,42 @@ const globalCache = globalThis.__binanceTickerCache ?? {
   ts: 0,
 };
 globalThis.__binanceTickerCache = globalCache;
+
+async function fetch24hTickersFromBinance() {
+  let lastStatus = null;
+  let lastError = null;
+
+  for (const base of BINANCE_BASE_CANDIDATES) {
+    try {
+      const res = await fetch(`${base}/api/v3/ticker/24hr`, {
+        cache: "no-store",
+        headers: {
+          "User-Agent": "finai-markets/1.0",
+          Accept: "application/json",
+        },
+      });
+
+      if (!res.ok) {
+        lastStatus = res.status;
+        continue;
+      }
+
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        lastStatus = 502;
+        continue;
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw new Error(`Binance request failed: ${lastError.message || "unknown error"}`);
+  }
+  throw new Error(`Binance API error ${lastStatus ?? "unknown"}`);
+}
 
 function filterAndMapTickers(tickers) {
   return tickers
@@ -47,14 +93,7 @@ export async function GET(request) {
     let tickers =
       globalCache.data && now - globalCache.ts < CACHE_MS ? globalCache.data : null;
     if (!tickers) {
-      const res = await fetch(BINANCE_24H_URL);
-      if (!res.ok) {
-        return NextResponse.json(
-          { error: `Binance API error ${res.status}` },
-          { status: 502 }
-        );
-      }
-      const data = await res.json();
+      const data = await fetch24hTickersFromBinance();
       tickers = filterAndMapTickers(Array.isArray(data) ? data : []);
       globalCache.data = tickers;
       globalCache.ts = now;
@@ -62,9 +101,7 @@ export async function GET(request) {
 
     let filtered = tickers;
     if (q) {
-      filtered = tickers.filter(
-        (t) => t.base.includes(q) || t.symbol.includes(q)
-      );
+      filtered = tickers.filter((t) => t.base.includes(q) || t.symbol.includes(q));
     }
 
     const sorted = [...filtered].sort((a, b) => {
@@ -78,7 +115,7 @@ export async function GET(request) {
   } catch (error) {
     logger.error("api:markets", "Binance 行情接口失败", { error: error?.message });
     return NextResponse.json(
-      { error: "Binance 数据获取失败，无数据返回" },
+      { error: error?.message ?? "Binance 数据获取失败，无数据返回" },
       { status: 502 }
     );
   }
