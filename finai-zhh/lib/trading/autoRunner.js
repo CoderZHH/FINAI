@@ -12,6 +12,8 @@ import { runDecisionCycle } from "./decisionEngine.js";
 import { logger } from "../infrastructure/logManager.js";
 import { importMarketData, syncLatestMarketData } from "../market/marketImporter.js";
 import { getPool } from "../infrastructure/db.js";
+import { upsertRiskLimits } from "../data/simSettingsService.js";
+import crypto from "node:crypto";
 
 /**
  * ============================================================================
@@ -75,6 +77,20 @@ const HISTORY_SYNC_MS = 60 * 1000; // 每分钟同步一次完整行情快照
 const ADVISORY_LOCK_NAMESPACE = 61001;
 const LOCK_KEY_MARKET_LOOP = 1;
 const LOCK_KEY_DISPATCH_TICK = 2;
+const BINANCE_USE_TESTNET =
+  process.env.BINANCE_TESTNET === "true" || !!process.env.BINANCE_API_KEY_TEST;
+const BINANCE_FAPI_BASE = (() => {
+  if (BINANCE_USE_TESTNET) {
+    return process.env.BINANCE_FAPI_BASE_TEST || "https://testnet.binancefuture.com";
+  }
+  return process.env.BINANCE_FAPI_BASE || "https://fapi.binance.com";
+})();
+const BINANCE_API_KEY = BINANCE_USE_TESTNET
+  ? process.env.BINANCE_API_KEY_TEST || process.env.BINANCE_API_KEY
+  : process.env.BINANCE_API_KEY;
+const BINANCE_API_SECRET = BINANCE_USE_TESTNET
+  ? process.env.BINANCE_API_SECRET_TEST || process.env.BINANCE_API_SECRET
+  : process.env.BINANCE_API_SECRET;
 
 const globalState = globalThis.__autoRunner__ ?? {
   started: false,
@@ -109,35 +125,168 @@ function ensureMarketSymbol(symbol) {
   return upper.endsWith("USDT") ? upper : `${upper}USDT`;
 }
 
-async function callInternalApi(path, { method = "POST" } = {}) {
-  const base = process.env.INTERNAL_API_BASE_URL || process.env.NEXT_PUBLIC_BASE_URL;
-  if (!base) {
-    throw new Error(
-      "INTERNAL_API_BASE_URL (or NEXT_PUBLIC_BASE_URL) is required for worker internal API calls."
-    );
+let dispatcherConfigured = false;
+let proxyAgent = null;
+
+async function configureProxy() {
+  if (dispatcherConfigured) return;
+  const proxyUrl =
+    process.env.HTTPS_PROXY ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy;
+  if (proxyUrl) {
+    try {
+      const { ProxyAgent } = await import("undici");
+      proxyAgent = new ProxyAgent(proxyUrl);
+    } catch (err) {
+      logger.warn("autoRunner", "proxy setup failed", { error: err?.message });
+    }
   }
-  const url = new URL(path, base);
-  const resp = await fetch(url.toString(), { method });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Internal API ${path} failed ${resp.status}: ${text || "unknown error"}`);
+  dispatcherConfigured = true;
+}
+
+async function fetchSignedBinanceJson(url) {
+  if (!BINANCE_API_KEY || !BINANCE_API_SECRET) {
+    throw new Error("BINANCE_API_KEY and BINANCE_API_SECRET are required for worker sync.");
   }
-  return resp.json();
+  await configureProxy();
+
+  const doFetch = async (useProxy) => {
+    const urlObj = new URL(url);
+    urlObj.searchParams.set("timestamp", Date.now().toString());
+    const qs = urlObj.searchParams.toString();
+    const signature = crypto
+      .createHmac("sha256", BINANCE_API_SECRET)
+      .update(qs)
+      .digest("hex");
+    urlObj.searchParams.set("signature", signature);
+
+    const resp = await fetch(urlObj.toString(), {
+      dispatcher: useProxy && proxyAgent ? proxyAgent : undefined,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Binance Sync)",
+        "X-MBX-APIKEY": BINANCE_API_KEY,
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`Binance request failed ${resp.status}: ${text || url}`);
+    }
+    return resp.json();
+  };
+
+  try {
+    return await doFetch(true);
+  } catch (error) {
+    if (String(error?.message || "").includes("fetch failed")) {
+      logger.warn("autoRunner", "proxy fetch failed, retrying without proxy", {
+        error: error?.message,
+      });
+      return await doFetch(false);
+    }
+    throw error;
+  }
 }
 
 async function syncRiskAndFunding(symbols = []) {
   const targets = symbols.map(ensureMarketSymbol);
   if (!targets.length) return;
-  const qs = encodeURIComponent(targets.join(","));
-  try {
-    await callInternalApi(`/api/binance/risk?symbols=${qs}`);
-  } catch (error) {
-    logger.warn("autoRunner", "内部风险分层同步失败", { error: error?.message, symbols: targets });
+  if (!BINANCE_API_KEY || !BINANCE_API_SECRET) {
+    logger.warn("autoRunner", "缺少 Binance API 凭证，跳过风险/资金费同步", {
+      symbols: targets,
+    });
+    return;
   }
+
+  const riskEntries = [];
+  const riskErrors = [];
+  for (const symbol of targets) {
+    try {
+      const payload = await fetchSignedBinanceJson(
+        `${BINANCE_FAPI_BASE}/fapi/v1/leverageBracket?symbol=${symbol}`
+      );
+      const brackets = Array.isArray(payload)
+        ? payload[0]?.brackets ?? []
+        : payload?.brackets ?? [];
+      for (const item of brackets) {
+        const tier = Number(item.bracket ?? 0);
+        if (!Number.isFinite(tier) || tier <= 0) continue;
+        const maxLeverage = Number(item.initialLeverage ?? 0);
+        const notionalCap = Number(item.notionalCap ?? 0);
+        const mmr = Number(item.maintMarginRatio ?? 0);
+        if (!Number.isFinite(maxLeverage) || !Number.isFinite(notionalCap)) continue;
+        riskEntries.push({
+          symbol,
+          tier,
+          notional_cap: notionalCap,
+          max_leverage: maxLeverage,
+          imr: maxLeverage > 0 ? 1 / maxLeverage : 0,
+          mmr: Number.isFinite(mmr) ? mmr : 0,
+        });
+      }
+    } catch (error) {
+      riskErrors.push({ symbol, error: error?.message });
+    }
+  }
+
+  if (riskEntries.length) {
+    await upsertRiskLimits(riskEntries);
+  }
+  if (riskErrors.length) {
+    logger.warn("autoRunner", "风险分层同步部分失败", {
+      failed: riskErrors.length,
+      symbols: riskErrors.map((item) => item.symbol),
+    });
+  }
+
+  const pool = getPool();
+  let fundingUpdated = 0;
   try {
-    await callInternalApi(`/api/binance/funding?symbols=${qs}`);
+    for (const symbol of targets) {
+      try {
+        const payload = await fetchSignedBinanceJson(
+          `${BINANCE_FAPI_BASE}/fapi/v1/premiumIndex?symbol=${symbol}`
+        );
+        const rate = Number(payload?.lastFundingRate ?? 0);
+        if (!Number.isFinite(rate)) continue;
+        const updated = await pool.query(
+          `
+          UPDATE market_prices
+          SET funding_rate = $2, updated_at = now()
+          WHERE symbol = $1
+          `,
+          [symbol, rate]
+        );
+        if (updated.rowCount === 0) {
+          await pool.query(
+            `
+            INSERT INTO market_prices (
+              symbol, price, change_percent, high_price, low_price, volume, funding_rate, last_update_ts, updated_at
+            )
+            VALUES ($1, 0, NULL, NULL, NULL, NULL, $2, now(), now())
+            ON CONFLICT (symbol) DO UPDATE SET funding_rate = EXCLUDED.funding_rate, updated_at = now()
+            `,
+            [symbol, rate]
+          );
+        }
+        fundingUpdated++;
+      } catch (error) {
+        logger.warn("autoRunner", "资金费同步失败", {
+          symbol,
+          error: error?.message,
+        });
+      }
+    }
+    logger.info("autoRunner", "风险/资金费同步完成", {
+      symbols: targets,
+      risk_rows: riskEntries.length,
+      funding_updated: fundingUpdated,
+    });
   } catch (error) {
-    logger.warn("autoRunner", "内部资金费同步失败", { error: error?.message, symbols: targets });
+    logger.warn("autoRunner", "风险/资金费同步失败", {
+      error: error?.message,
+      symbols: targets,
+    });
   }
 }
 
