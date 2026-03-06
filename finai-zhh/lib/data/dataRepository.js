@@ -423,6 +423,10 @@ function hydrateTickerFromDb(row) {
 }
 
 function mapModelRow(row, { includeSecrets = true } = {}) {
+  const baselineLike =
+    isBaselineModelId(row?.model_id) ||
+    String(row?.model_id ?? "").toLowerCase().includes("benchmark") ||
+    String(row?.display_name ?? "").toLowerCase().includes("benchmark");
   const apiKey = row.api_key ?? "";
   const startingEquity =
     row.account_starting_equity != null ? toNumber(row.account_starting_equity) : null;
@@ -453,7 +457,9 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
     llm_model: row.llm_model ?? null,
     api_base_url: row.api_base_url ?? "",
     api_key: includeSecrets ? apiKey : "",
-    display_icon: row.display_icon ?? DEFAULT_MODEL_ICON,
+    display_icon: baselineLike
+      ? BASELINE_DISPLAY_ICON
+      : row.display_icon ?? DEFAULT_MODEL_ICON,
     margin_config: row.margin_config ?? {},
     allowed_symbols:
       Array.isArray(row.allowed_symbols) && row.allowed_symbols.length
@@ -1859,8 +1865,9 @@ export async function getPerformanceTimeseries({ ownerUserId = null } = {}) {
     color: account.color,
     is_benchmark:
       isBaselineModelId(account.model_id) ||
+      String(account?.model_id ?? "").toLowerCase().includes("benchmark") ||
       Number(account?.metadata?.benchmark_quantity ?? 0) > 0 ||
-      String(account?.display_name ?? "").trim().toLowerCase() === "btc benchmark",
+      String(account?.display_name ?? "").trim().toLowerCase().includes("benchmark"),
     points: historyByModel[account.model_id] ?? [],
   }));
 

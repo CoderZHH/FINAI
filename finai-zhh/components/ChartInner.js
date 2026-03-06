@@ -50,7 +50,7 @@ const X_AXIS_ID = "ts-axis";
 const Y_AXIS_ID = "equity-axis";
 
 const SERIES_COLOR_MAP = {
-  btc: "rgb(247, 147, 26)",
+  btc: "rgb(246, 146, 26)",
   "icon:claude": "rgb(255, 107, 54)",
   "icon:deepseek": "rgb(78, 107, 254)",
   "icon:doubao": "rgb(202, 228, 255)",
@@ -245,6 +245,7 @@ export default function ChartInner({
         name: entry.name,
         type: "line",
         data: values,
+        connectNulls: true,
         showSymbol: false, // 不显示数据点标记
         smooth: 0.2, // 平滑曲线（0-1之间，0为折线，1为最平滑）
         emphasis: { focus: "series" }, // 鼠标悬停时高亮整条系列

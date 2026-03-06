@@ -38,6 +38,7 @@ const COLOR_PALETTE = [
   "#0EA5E9",
   "#F97316",
 ];
+const BASELINE_COLOR = "rgb(246, 146, 26)";
 
 const BASELINE_MODEL_PREFIX = "btc_benchmark";
 const PROVIDER_DEFAULT_BASE_URL = {
@@ -93,6 +94,19 @@ function resolveIconForModel(model) {
 
 function isBaselineModelId(modelId) {
   return String(modelId ?? "").startsWith(BASELINE_MODEL_PREFIX);
+}
+
+function isLikelyBenchmark(seriesOrModel = {}) {
+  const modelId = String(seriesOrModel?.model_id ?? seriesOrModel?.modelId ?? "").toLowerCase();
+  const name = String(seriesOrModel?.name ?? seriesOrModel?.display_name ?? "").toLowerCase();
+  return (
+    Boolean(seriesOrModel?.is_benchmark) ||
+    isBaselineModelId(modelId) ||
+    modelId.includes("benchmark") ||
+    modelId.includes("buyhold") ||
+    name.includes("benchmark") ||
+    name.includes("buy&hold")
+  );
 }
 
 function renderIcon(iconValue) {
@@ -192,7 +206,7 @@ function deriveLegend(seriesMeta, iconLookup) {
         series.iconValue ??
         null,
       strokeDasharray: series.strokeDasharray,
-      isBenchmark: Boolean(series.is_benchmark),
+      isBenchmark: isLikelyBenchmark(series),
       latestDollar: latest.dollar_equity,
       latestPct: latest.cum_pnl_pct,
     };
@@ -201,12 +215,33 @@ function deriveLegend(seriesMeta, iconLookup) {
 
 /** 下方卡片 */
 function deriveCards(models, seriesMeta) {
-  const benchmarkModelIds = new Set(
-    (seriesMeta ?? [])
-      .filter((series) => Boolean(series?.is_benchmark))
-      .map((series) => String(series.model_id ?? ""))
-      .filter(Boolean)
-  );
+  const modelById = new Map();
+  (models ?? []).forEach((model) => {
+    const modelId = String(model?.model_id ?? "");
+    if (modelId) modelById.set(modelId, model);
+  });
+
+  const seriesByModel = new Map();
+  (seriesMeta ?? []).forEach((series) => {
+    const modelId = String(series?.model_id ?? "");
+    if (modelId) seriesByModel.set(modelId, series);
+  });
+
+  const orderedModelIds = [];
+  const seen = new Set();
+  (models ?? []).forEach((model) => {
+    const modelId = String(model?.model_id ?? "");
+    if (!modelId || seen.has(modelId)) return;
+    orderedModelIds.push(modelId);
+    seen.add(modelId);
+  });
+  (seriesMeta ?? []).forEach((series) => {
+    const modelId = String(series?.model_id ?? "");
+    if (!modelId || seen.has(modelId)) return;
+    orderedModelIds.push(modelId);
+    seen.add(modelId);
+  });
+
   const latestByModel = new Map();
   (seriesMeta ?? []).forEach((series) => {
     const latestPoint = series.points?.at(-1) ?? {};
@@ -216,45 +251,44 @@ function deriveCards(models, seriesMeta) {
     });
   });
 
-  return (models ?? [])
-    .filter((model) => {
-      const modelId = String(model?.model_id ?? "");
-      const displayName = String(model?.display_name ?? "").trim().toLowerCase();
-      if (!modelId) return false;
-      if (isBaselineModelId(modelId)) return false;
-      if (benchmarkModelIds.has(modelId)) return false;
-      if (displayName.includes("benchmark")) return false;
-      return true;
-    })
-    .map((model) => {
-      const seriesEntry = latestByModel.get(model.model_id);
+  return orderedModelIds
+    .map((modelId) => {
+      const model = modelById.get(modelId) ?? {};
+      const series = seriesByModel.get(modelId) ?? {};
+      const seriesEntry = latestByModel.get(modelId);
       if (!seriesEntry) {
         // 若缺少时间序列，跳过该模型卡片，避免前端直接抛错
         return null;
       }
 
+      const isBenchmark = isLikelyBenchmark({
+        ...series,
+        ...model,
+        model_id: modelId,
+      });
       const latest = Number(seriesEntry.latestDollar ?? NaN);
       const pctFromSeries = Number(seriesEntry.pnlPct ?? NaN);
       if (!Number.isFinite(latest) || !Number.isFinite(pctFromSeries)) {
-        throw new Error(
-          `模型 ${model.model_id} 时间序列数据异常，无法计算盈亏。`
-        );
+        return null;
       }
 
       // 通过累计收益率反推起始权益
       const starting = latest / (1 + pctFromSeries);
+      if (!Number.isFinite(starting)) return null;
       const pnlAbs = latest - starting;
       const pnlPct = pctFromSeries;
 
       return {
-        modelId: model.model_id,
-        name: model.display_name,
-        color: model.color_hex ?? "#111827",
+        modelId,
+        name: model.display_name ?? series.name ?? modelId,
+        color: isBenchmark
+          ? BASELINE_COLOR
+          : (series.color ?? model.color_hex ?? "#111827"),
         latestDollar: latest,
         pnlAbs,
         pnlPct,
-        iconValue: model.display_icon,
-        isBenchmark: false,
+        iconValue: model.display_icon ?? series.icon ?? null,
+        isBenchmark,
       };
     })
     .filter(Boolean);
@@ -279,10 +313,10 @@ export default function ChartPanel() {
   const seriesMeta = useMemo(
     () =>
       rawSeries.map((series, idx) => {
-        const color =
-          series.color ?? COLOR_PALETTE[idx % COLOR_PALETTE.length];
-        const isBenchmark =
-          series.is_benchmark ?? isBaselineModelId(series.model_id);
+        const isBenchmark = isLikelyBenchmark(series);
+        const color = isBenchmark
+          ? BASELINE_COLOR
+          : (series.color ?? COLOR_PALETTE[idx % COLOR_PALETTE.length]);
 
         return {
           ...series,

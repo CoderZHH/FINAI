@@ -647,6 +647,7 @@ function PositionsPanel({ iconMap }) {
         .trim()
         .toLowerCase();
       if (isBaselineModelId(modelId)) return false;
+      if (modelId.toLowerCase().includes("benchmark")) return false;
       if (displayName.includes("benchmark")) return false;
       return true;
     }
