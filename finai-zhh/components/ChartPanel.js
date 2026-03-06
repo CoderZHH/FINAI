@@ -210,29 +210,26 @@ function deriveLegend(seriesMeta, iconLookup) {
   });
 }
 
-/** 下方卡片 */
-function deriveCards(models, seriesMeta) {
+/** 下方卡片（与图表系列保持一致） */
+function deriveCards(models, legendData) {
   const modelById = new Map();
   (models ?? []).forEach((model) => {
     const modelId = String(model?.model_id ?? "");
     if (modelId) modelById.set(modelId, model);
   });
 
-  // 卡片应与图表系列一一对应：图上有线，就有卡片
-  return (seriesMeta ?? [])
-    .map((series) => {
-      const modelId = String(series?.model_id ?? "");
+  // 卡片与 legend 一一对应：图上有线，就有卡片
+  return (legendData ?? [])
+    .map((entry) => {
+      const modelId = String(entry?.modelId ?? entry?.model_id ?? "");
       if (!modelId) return null;
       const model = modelById.get(modelId) ?? {};
-      const latestPoint = series?.points?.at(-1);
-      if (!latestPoint) return null;
-
-      const isBenchmark = Boolean(series?.is_benchmark) || isBaselineModelId(series?.model_id);
-      const latest = Number(latestPoint.dollar_equity ?? latestPoint.equity ?? NaN);
+      const isBenchmark = Boolean(entry?.isBenchmark) || isBaselineModelId(modelId);
+      const latest = Number(entry?.latestDollar ?? NaN);
       if (!Number.isFinite(latest)) return null;
 
       const modelStarting = Number(model.starting_equity ?? NaN);
-      let pnlPct = Number(latestPoint.cum_pnl_pct ?? NaN);
+      let pnlPct = Number(entry?.latestPct ?? NaN);
       if (!Number.isFinite(pnlPct)) {
         pnlPct =
           Number.isFinite(modelStarting) && modelStarting > 0
@@ -252,12 +249,12 @@ function deriveCards(models, seriesMeta) {
 
       return {
         modelId,
-        name: model.display_name ?? series.name ?? modelId,
-        color: isBenchmark ? BASELINE_COLOR : (series.color ?? model.color_hex ?? "#111827"),
+        name: model.display_name ?? entry?.name ?? modelId,
+        color: isBenchmark ? BASELINE_COLOR : (entry?.color ?? model.color_hex ?? "#111827"),
         latestDollar: latest,
         pnlAbs: latest - starting,
         pnlPct,
-        iconValue: model.display_icon ?? series.icon ?? null,
+        iconValue: model.display_icon ?? entry?.iconValue ?? null,
         isBenchmark,
       };
     })
@@ -338,9 +335,9 @@ export default function ChartPanel() {
           ...model,
           display_icon: resolveIconForModel(model),
         })),
-        seriesMeta,
+        legendData,
       ),
-    [modelsData, seriesMeta],
+    [modelsData, legendData],
   );
 
   const nameLookup = useMemo(() => {

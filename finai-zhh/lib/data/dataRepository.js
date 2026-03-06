@@ -3505,18 +3505,20 @@ export async function ensureUserBaseline(ownerUserId) {
     ownerUserId: userId,
   });
   if (existing) {
-    if (existing.display_icon !== BASELINE_DISPLAY_ICON) {
-      await pool.query(
-        `
-        UPDATE agent_models
-        SET display_icon = $2, updated_at = now()
-        WHERE model_id = $1
-        `,
-        [modelId, BASELINE_DISPLAY_ICON]
-      );
-      return getAgentModelById(modelId, { includeSecrets: false, ownerUserId: userId });
-    }
-    return existing;
+    await pool.query(
+      `
+      UPDATE agent_models
+      SET owner_user_id = CASE
+            WHEN model_id = 'btc_benchmark' THEN $3
+            ELSE COALESCE(owner_user_id, $3)
+          END,
+          display_icon = $2,
+          updated_at = now()
+      WHERE model_id = $1
+      `,
+      [modelId, BASELINE_DISPLAY_ICON, userId]
+    );
+    return getAgentModelById(modelId, { includeSecrets: false, ownerUserId: userId });
   }
 
   const initialUsd = 10000;
