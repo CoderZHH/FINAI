@@ -4,6 +4,7 @@ import {
   getPromptTemplateById,
   updatePromptTemplate,
 } from "../../../../lib/data/dataRepository";
+import { requirePrincipal } from "../../../../lib/auth/requestAuth.js";
 
 async function getTemplateId(context) {
   if (!context) return undefined;
@@ -15,6 +16,8 @@ async function getTemplateId(context) {
 }
 
 export async function GET(_request, context) {
+  const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: false });
+  if (!auth.ok) return auth.response;
   const templateId = await getTemplateId(context);
   const template = await getPromptTemplateById(templateId);
   if (!template) {
@@ -24,6 +27,8 @@ export async function GET(_request, context) {
 }
 
 export async function PUT(request, context) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
   const templateId = await getTemplateId(context);
   if (!templateId) {
     return Response.json({ error: "templateId is required" }, { status: 400 });
@@ -43,6 +48,8 @@ export async function PUT(request, context) {
 }
 
 export async function DELETE(_request, context) {
+  const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
   const templateId = await getTemplateId(context);
   if (!templateId) {
     return Response.json({ error: "templateId is required" }, { status: 400 });

@@ -1,5 +1,4 @@
 import { getPool } from "../infrastructure/db.js";
-import { getRedis } from "../infrastructure/redis.js";
 import { getFeeRate } from "./simConfig.js";
 import { runLiquidationCheckForAccount } from "../trading/liquidationEngine.js";
 import { distributeAdlLoss } from "../trading/adlEngine.js";
@@ -66,7 +65,8 @@ async function ensureAgentModelSchema() {
       ALTER TABLE IF EXISTS agent_models
         ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[],
         ADD COLUMN IF NOT EXISTS provider TEXT,
-        ADD COLUMN IF NOT EXISTS llm_model TEXT
+        ADD COLUMN IF NOT EXISTS llm_model TEXT,
+        ADD COLUMN IF NOT EXISTS owner_user_id UUID
     `);
     agentModelSchemaEnsured = true;
   } catch (error) {
@@ -77,15 +77,18 @@ async function ensureAgentModelSchema() {
   }
 }
 
-async function loadAllModelAllowedSymbols() {
+async function loadAllModelAllowedSymbols(ownerUserId = null) {
   await ensureAgentModelSchema();
   const pool = getPool();
+  const where = ownerUserId ? "WHERE allowed_symbols IS NOT NULL AND owner_user_id = $1" : "WHERE allowed_symbols IS NOT NULL";
+  const params = ownerUserId ? [ownerUserId] : [];
   const { rows } = await pool.query(
     `
     SELECT DISTINCT UNNEST(allowed_symbols) AS symbol
     FROM agent_models
-    WHERE allowed_symbols IS NOT NULL
-    `
+    ${where}
+    `,
+    params
   );
   const symbols = rows
     .map((r) => String(r.symbol ?? "").toUpperCase().replace(/USDT$/i, ""))
@@ -287,23 +290,6 @@ function applyFundingSettlements(account, positions, fundingRates, fundingCfg, n
   return { walletDelta, metadata };
 }
 
-async function fetchRedisTickers(symbols) {
-  const redis = getRedis();
-  if (!redis) {
-    return new Array(symbols.length).fill(null);
-  }
-
-  const redisKeys = symbols.map((symbol) => `prices:${symbol}`);
-  try {
-    return await redis.mget(redisKeys);
-  } catch (error) {
-    logger.warn("market", "Redis 行情获取失败，回退到数据库价格", {
-      error: error?.message,
-    });
-    return new Array(symbols.length).fill(null);
-  }
-}
-
 async function fetchDbTickers(pool, symbols) {
   if (!symbols.length) return [];
   const { rows } = await pool.query(
@@ -334,22 +320,6 @@ async function fetchDbTickers(pool, symbols) {
     [symbols]
   );
   return rows;
-}
-
-function hydrateTickerFromRedis(redisPayload, symbol) {
-  if (!redisPayload) return null;
-  try {
-    const parsed = JSON.parse(redisPayload);
-    return {
-      symbol,
-      price: toNumber(parsed.price),
-      change: parsed.changePercent != null ? toNumber(parsed.changePercent) : null,
-      timestamp: parsed.lastUpdateTs ?? Date.now(),
-    };
-  } catch (err) {
-    logger.warn("market", "Redis 行情解析失败", { error: err?.message });
-    return null;
-  }
 }
 
 function hydrateTickerFromDb(row) {
@@ -403,6 +373,7 @@ function mapModelRow(row, { includeSecrets = true } = {}) {
       : null;
   return {
     model_id: row.model_id,
+    owner_user_id: row.owner_user_id ?? null,
     display_name: row.display_name ?? row.model_id,
     provider: row.provider ?? null,
     llm_model: row.llm_model ?? null,
@@ -525,23 +496,9 @@ export async function getMarketSnapshot(targetSymbols = null) {
     };
   }
 
-  const redisRows = await fetchRedisTickers(marketSymbols);
   const prices = {};
-  const missingSymbols = [];
-
-  redisRows.forEach((payload, idx) => {
-    const storageSymbol = marketSymbols[idx];
-    const baseSymbol = normalizeSymbol(storageSymbol);
-    const ticker = hydrateTickerFromRedis(payload, storageSymbol);
-    if (ticker) {
-      prices[baseSymbol] = ticker;
-    } else {
-      missingSymbols.push(storageSymbol);
-    }
-  });
-
-  if (missingSymbols.length) {
-    const dbRows = await fetchDbTickers(pool, missingSymbols);
+  if (marketSymbols.length) {
+    const dbRows = await fetchDbTickers(pool, marketSymbols);
     dbRows.forEach((row) => {
       const normalized = normalizeSymbol(row.symbol);
       prices[normalized] = hydrateTickerFromDb(row);
@@ -880,11 +837,12 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
 }
 
 export async function listAgentModels(options = {}) {
-  const { includeDisabled = true, includeSecrets = true } = options;
+  const { includeDisabled = true, includeSecrets = true, ownerUserId = null } = options;
   const pool = getPool();
   await ensureAgentModelSchema();
   await ensurePromptTemplateSchema();
   await loadAllModelAllowedSymbols();
+  const where = ownerUserId ? "WHERE m.owner_user_id = $1" : "";
   const { rows } = await pool.query(
     `
     SELECT
@@ -903,18 +861,24 @@ export async function listAgentModels(options = {}) {
     FROM agent_models m
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
     LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
+    ${where}
     ORDER BY m.display_name, m.model_id
-    `
+    `,
+    ownerUserId ? [ownerUserId] : []
   );
 
   return rows.map((row) => mapModelRow(row, { includeSecrets }));
 }
 
-export async function getAgentModelById(modelId, { includeSecrets = true } = {}) {
+export async function getAgentModelById(
+  modelId,
+  { includeSecrets = true, ownerUserId = null } = {}
+) {
   const pool = getPool();
   await ensureAgentModelSchema();
   await ensurePromptTemplateSchema();
   await loadAllModelAllowedSymbols();
+  const whereOwner = ownerUserId ? "AND m.owner_user_id = $2" : "";
   const { rows } = await pool.query(
     `
     SELECT
@@ -934,8 +898,9 @@ export async function getAgentModelById(modelId, { includeSecrets = true } = {})
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
     LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
     WHERE m.model_id = $1
+    ${whereOwner}
     `,
-    [modelId]
+    ownerUserId ? [modelId, ownerUserId] : [modelId]
   );
   if (!rows.length) return null;
   return mapModelRow(rows[0], { includeSecrets });
@@ -974,7 +939,11 @@ export async function createAgentModel(payload) {
     display_icon = DEFAULT_MODEL_ICON,
     margin_config = {},
     allowed_symbols = null,
+    owner_user_id = null,
   } = payload;
+  if (!owner_user_id) {
+    throw new Error("owner_user_id is required.");
+  }
 
   const template = await resolvePromptTemplate(prompt_template_id);
 
@@ -988,6 +957,7 @@ export async function createAgentModel(payload) {
     `
     INSERT INTO agent_models (
       model_id,
+      owner_user_id,
       display_name,
       provider,
       llm_model,
@@ -1001,11 +971,12 @@ export async function createAgentModel(payload) {
       margin_config,
       allowed_symbols
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     RETURNING *
     `,
     [
       model_id,
+      owner_user_id,
       display_name,
       provider ?? null,
       llm_model ?? null,
@@ -1042,7 +1013,7 @@ export async function createAgentModel(payload) {
   return mapModelRow(rows[0]);
 }
 
-export async function updateAgentModel(modelId, updates) {
+export async function updateAgentModel(modelId, updates, { ownerUserId = null } = {}) {
   const pool = getPool();
   const allowed = {
     display_name: "display_name",
@@ -1109,12 +1080,14 @@ export async function updateAgentModel(modelId, updates) {
 
   if (!fields.length) {
     logger.info("dataRepository", "模型配置未变更，跳过更新", { model_id: modelId });
-    return getAgentModelById(modelId);
+    return getAgentModelById(modelId, { ownerUserId });
   }
 
   fields.push(`updated_at = now()`);
 
   values.push(modelId);
+  const ownerClause = ownerUserId ? ` AND owner_user_id = $${values.length + 1}` : "";
+  if (ownerUserId) values.push(ownerUserId);
 
   logger.info("dataRepository", "更新模型 SQL 构建完成", {
     model_id: modelId,
@@ -1126,7 +1099,8 @@ export async function updateAgentModel(modelId, updates) {
     `
     UPDATE agent_models
     SET ${fields.join(", ")}
-    WHERE model_id = $${values.length}
+    WHERE model_id = $${ownerUserId ? values.length - 1 : values.length}
+    ${ownerClause}
     RETURNING *
     `,
     values
@@ -1142,14 +1116,16 @@ export async function updateAgentModel(modelId, updates) {
   return mapModelRow(rows[0]);
 }
 
-export async function deleteAgentModel(modelId) {
+export async function deleteAgentModel(modelId, { ownerUserId = null } = {}) {
   const pool = getPool();
+  const ownerClause = ownerUserId ? "AND owner_user_id = $2" : "";
   await pool.query(
     `
     DELETE FROM agent_models
     WHERE model_id = $1
+    ${ownerClause}
     `,
-    [modelId]
+    ownerUserId ? [modelId, ownerUserId] : [modelId]
   );
 }
 
@@ -1169,8 +1145,9 @@ export async function markModelAutoRun(modelId, { lastRun = new Date(), interval
   );
 }
 
-export async function getAgentAccounts() {
+export async function getAgentAccounts({ ownerUserId = null } = {}) {
   const pool = getPool();
+  const where = ownerUserId ? "WHERE m.owner_user_id = $1" : "";
   const { rows } = await pool.query(
     `
     SELECT
@@ -1192,8 +1169,10 @@ export async function getAgentAccounts() {
     FROM agent_models m
     LEFT JOIN agent_accounts_runtime a ON a.model_id = m.model_id
     LEFT JOIN prompt_templates t ON t.id = m.prompt_template_id
+    ${where}
     ORDER BY m.display_name, m.model_id
-    `
+    `,
+    ownerUserId ? [ownerUserId] : []
   );
 
   return rows.map(mapAccountRow);
@@ -1438,9 +1417,13 @@ export async function deletePromptTemplate(templateId) {
   return true;
 }
 
-export async function getSinceInceptionValues() {
+export async function getSinceInceptionValues({ ownerUserId = null } = {}) {
   const pool = getPool();
-  const models = await listAgentModels({ includeDisabled: true, includeSecrets: false });
+  const models = await listAgentModels({
+    includeDisabled: true,
+    includeSecrets: false,
+    ownerUserId,
+  });
   if (!models.length) return [];
 
   const [{ rows: inceptionRows }, { rows: logRows }] = await Promise.all([
@@ -1475,9 +1458,9 @@ export async function getSinceInceptionValues() {
   }));
 }
 
-export async function getPerformanceTimeseries() {
+export async function getPerformanceTimeseries({ ownerUserId = null } = {}) {
   const pool = getPool();
-  const accounts = await getAgentAccounts();
+  const accounts = await getAgentAccounts({ ownerUserId });
   const startingEquityMap = new Map(
     accounts.map((account) => [account.model_id, account.starting_equity ?? 10000])
   );
@@ -1551,9 +1534,9 @@ export async function getPerformanceTimeseries() {
   };
 }
 
-export async function getPositionsSnapshot() {
+export async function getPositionsSnapshot({ ownerUserId = null } = {}) {
   const pool = getPool();
-  const accounts = (await getAgentAccounts()).filter(
+  const accounts = (await getAgentAccounts({ ownerUserId })).filter(
     (account) => account.model_id !== BASELINE_MODEL_ID
   );
   if (!accounts.length) return [];
@@ -1807,16 +1790,20 @@ export async function markToMarketAllModels() {
  * Fetch recent log entries for UI timelines / log console.
  * agent_logs acts as the unified audit trail (pending decisions, approvals, executions).
  */
-export async function getAgentLogs(limit = 20) {
+export async function getAgentLogs(limit = 20, { ownerUserId = null } = {}) {
   const pool = getPool();
+  const where = ownerUserId
+    ? "WHERE model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $2)"
+    : "";
   const { rows } = await pool.query(
     `
     SELECT id, model_id, public_message, cot_trace_summary, prompt_text, response_text, response_json, reasoning_content, created_at
     FROM agent_logs
+    ${where}
     ORDER BY created_at DESC
     LIMIT $1
     `,
-    [limit]
+    ownerUserId ? [limit, ownerUserId] : [limit]
   );
 
   return rows.map((row) => ({
@@ -1832,19 +1819,23 @@ export async function getAgentLogs(limit = 20) {
   }));
 }
 
-export async function getRecentTrades(limit = 20) {
+export async function getRecentTrades(limit = 20, { ownerUserId = null } = {}) {
   const pool = getPool();
   try {
+    const where = ownerUserId
+      ? "WHERE model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $2)"
+      : "";
     const { rows } = await pool.query(
       `
       SELECT id, model_id, symbol, side, leverage, quantity, entry_price, exit_price,
              entry_time, exit_time, holding_time, realized_net_pnl, decision_source,
              exit_plan
       FROM trades
+      ${where}
       ORDER BY entry_time DESC NULLS LAST, id DESC
       LIMIT $1
       `,
-      [limit]
+      ownerUserId ? [limit, ownerUserId] : [limit]
     );
 
     return rows.map((row) => ({
@@ -1955,8 +1946,9 @@ function normalizePendingDecision(row) {
  * List agent_logs entries waiting for human review (review_status='pending').
  * Joined with agent_models to expose the display name for UI.
  */
-export async function getPendingDecisions() {
+export async function getPendingDecisions({ ownerUserId = null } = {}) {
   const pool = getPool();
+  const ownerFilter = ownerUserId ? "AND m.owner_user_id = $1" : "";
   const { rows } = await pool.query(
     `
     SELECT
@@ -1965,15 +1957,18 @@ export async function getPendingDecisions() {
     FROM agent_logs l
     LEFT JOIN agent_models m ON m.model_id = l.model_id
     WHERE l.review_status = 'pending'
+    ${ownerFilter}
     ORDER BY l.created_at DESC
-    `
+    `,
+    ownerUserId ? [ownerUserId] : []
   );
 
   return rows.map(normalizePendingDecision);
 }
 
-export async function getPendingDecisionById(decisionId) {
+export async function getPendingDecisionById(decisionId, { ownerUserId = null } = {}) {
   const pool = getPool();
+  const ownerFilter = ownerUserId ? "AND m.owner_user_id = $2" : "";
   const { rows } = await pool.query(
     `
     SELECT
@@ -1982,8 +1977,9 @@ export async function getPendingDecisionById(decisionId) {
     FROM agent_logs l
     LEFT JOIN agent_models m ON m.model_id = l.model_id
     WHERE l.id = $1
+    ${ownerFilter}
     `,
-    [decisionId]
+    ownerUserId ? [decisionId, ownerUserId] : [decisionId]
   );
   if (!rows.length) return null;
   return normalizePendingDecision(rows[0]);
@@ -2733,22 +2729,9 @@ export async function getPriceMap(symbols) {
   if (!symbols.length) return {};
   const pool = getPool();
   const normalizedSymbols = symbols.map((symbol) => normalizeSymbol(symbol));
-  const redisRows = await fetchRedisTickers(normalizedSymbols);
   const prices = {};
-  const missing = [];
-
-  redisRows.forEach((payload, idx) => {
-    const symbol = normalizedSymbols[idx];
-    const ticker = hydrateTickerFromRedis(payload, symbol);
-    if (ticker) {
-      prices[symbol] = ticker;
-    } else {
-      missing.push(symbol);
-    }
-  });
-
-  if (missing.length) {
-    const storageSymbols = missing.map((symbol) => ensureMarketSymbol(symbol));
+  if (normalizedSymbols.length) {
+    const storageSymbols = normalizedSymbols.map((symbol) => ensureMarketSymbol(symbol));
     const dbRows = await fetchDbTickers(pool, storageSymbols);
     dbRows.forEach((row) => {
       const base = normalizeSymbol(row.symbol);
@@ -3015,11 +2998,21 @@ export async function initializeBtcBenchmark() {
     if (!template) {
       throw new Error("尚未配置默认提示词模板，无法创建基准模型。");
     }
+    const ownerRes = await client.query(
+      `
+      SELECT id FROM users WHERE username = 'root' LIMIT 1
+      `
+    );
+    const ownerUserId = ownerRes.rows[0]?.id;
+    if (!ownerUserId) {
+      throw new Error("root user not found. please run reset-db to bootstrap auth tables.");
+    }
 
     await client.query(
       `
       INSERT INTO agent_models (
         model_id,
+        owner_user_id,
         display_name,
         api_base_url,
         api_key,
@@ -3030,11 +3023,12 @@ export async function initializeBtcBenchmark() {
         display_icon,
         allowed_symbols
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       ON CONFLICT (model_id) DO NOTHING
       `,
       [
         modelId,
+        ownerUserId,
         "BTC Benchmark",
         null,
         null,

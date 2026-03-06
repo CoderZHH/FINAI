@@ -12,6 +12,7 @@ import { logger } from "../../../../lib/infrastructure/logManager.js";
 import { upsertRiskLimits } from "../../../../lib/data/simSettingsService.js";
 import { getPool } from "../../../../lib/infrastructure/db.js";
 import { importMarketData } from "../../../../lib/market/marketImporter.js";
+import { requirePrincipal } from "../../../../lib/auth/requestAuth.js";
 
 function compactModelResponse(model) {
   if (!model) return model;
@@ -212,8 +213,11 @@ function normalizeAllowedSymbolsInput(input) {
 }
 
 export async function GET(_request, context) {
+  const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: false });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const modelId = await getModelIdFromContext(context);
-  const model = await getAgentModelById(modelId);
+  const model = await getAgentModelById(modelId, { ownerUserId: principal.userId });
   if (!model) {
     return Response.json({ error: "Model not found" }, { status: 404 });
   }
@@ -221,13 +225,16 @@ export async function GET(_request, context) {
 }
 
 export async function PUT(request, context) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const modelId = await getModelIdFromContext(context);
   try {
    
     const payload = await request.json();
    
 
-    const currentModel = await getAgentModelById(modelId);
+    const currentModel = await getAgentModelById(modelId, { ownerUserId: principal.userId });
     if (!currentModel) {
       return Response.json({ error: "Model not found" }, { status: 404 });
     }
@@ -359,7 +366,9 @@ export async function PUT(request, context) {
       }
     }
 
-    const model = await updateAgentModel(modelId, updates);
+    const model = await updateAgentModel(modelId, updates, {
+      ownerUserId: principal.userId,
+    });
     // 如果新增了币种，自动同步风险分层与资金费
     if (updates.allowed_symbols) {
       const previousSet = new Set(previousSymbols);
@@ -382,7 +391,10 @@ export async function PUT(request, context) {
     if (!model) {
       return Response.json({ error: "Model not found" }, { status: 404 });
     }
-    const fresh = await getAgentModelById(modelId, { includeSecrets: false });
+    const fresh = await getAgentModelById(modelId, {
+      includeSecrets: false,
+      ownerUserId: principal.userId,
+    });
     const compact = compactModelResponse(fresh);
    
     return Response.json({ model: compact });
@@ -398,7 +410,10 @@ export async function PUT(request, context) {
 }
 
 export async function DELETE(_request, context) {
+  const auth = await requirePrincipal(_request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const modelId = await getModelIdFromContext(context);
-  await deleteAgentModel(modelId);
+  await deleteAgentModel(modelId, { ownerUserId: principal.userId });
   return Response.json({ ok: true });
 }

@@ -10,10 +10,8 @@
 } from "../data/dataRepository.js";
 import { runDecisionCycle } from "./decisionEngine.js";
 import { logger } from "../infrastructure/logManager.js";
-import { upsertRiskLimits } from "../data/simSettingsService.js";
-import { getPool } from "../infrastructure/db.js";
-import crypto from "node:crypto";
 import { importMarketData, syncLatestMarketData } from "../market/marketImporter.js";
+import { getPool } from "../infrastructure/db.js";
 
 /**
  * ============================================================================
@@ -53,30 +51,30 @@ import { importMarketData, syncLatestMarketData } from "../market/marketImporter
  */
 /** 默认每 5 秒执行一次市场同步和模型调度（可通过环境变量覆盖） */
 const DEFAULT_TICK_MS = (() => {
-  const value = Number(process.env.AUTO_RUNNER_TICK_MS);
+  const value = Number(process.env.AUTO_RUNNER_TICK_MS ?? 5000);
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("AUTO_RUNNER_TICK_MS is required (ms).");
+    logger.warn("autoRunner", "AUTO_RUNNER_TICK_MS 非法，回退到 5000ms", {
+      value: process.env.AUTO_RUNNER_TICK_MS,
+    });
+    return 5000;
   }
   return value;
 })();
 const MARKET_LOOP_INTERVAL_MS = (() => {
-  const value = Number(process.env.MARKET_LOOP_INTERVAL_MS);
+  const value = Number(process.env.MARKET_LOOP_INTERVAL_MS ?? 5000);
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("MARKET_LOOP_INTERVAL_MS is required (ms).");
+    logger.warn("autoRunner", "MARKET_LOOP_INTERVAL_MS 非法，回退到 5000ms", {
+      value: process.env.MARKET_LOOP_INTERVAL_MS,
+    });
+    return 5000;
   }
   return value;
 })();
-const BINANCE_FAPI_BASE = (() => {
-  const base = process.env.BINANCE_FAPI_BASE;
-  if (!base) throw new Error("BINANCE_FAPI_BASE is required.");
-  return base;
-})();
-const API_KEY = process.env.BINANCE_API_KEY;
-const API_SECRET = process.env.BINANCE_API_SECRET;
 const AUTO_SYNC_RISK_MS = 60 * 60 * 1000; // 每 60 分钟后台同步一次分层/资金费
 const HISTORY_SYNC_MS = 60 * 1000; // 每分钟同步一次完整行情快照
-
-let dispatcherConfigured = false;
+const ADVISORY_LOCK_NAMESPACE = 61001;
+const LOCK_KEY_MARKET_LOOP = 1;
+const LOCK_KEY_DISPATCH_TICK = 2;
 
 const globalState = globalThis.__autoRunner__ ?? {
   started: false,
@@ -111,62 +109,13 @@ function ensureMarketSymbol(symbol) {
   return upper.endsWith("USDT") ? upper : `${upper}USDT`;
 }
 
-async function fetchJson(url) {
-  if (!API_KEY || !API_SECRET) {
-    throw new Error("Binance API key/secret missing (BINANCE_API_KEY / BINANCE_API_SECRET).");
-  }
-  if (!dispatcherConfigured) {
-    const proxyUrl =
-      process.env.HTTPS_PROXY ||
-      process.env.HTTP_PROXY ||
-      process.env.http_proxy;
-    try {
-      const { ProxyAgent, setGlobalDispatcher, fetch: undiciFetch } = await import("undici");
-      if (proxyUrl) {
-        setGlobalDispatcher(new ProxyAgent(proxyUrl));
-        globalThis.__binanceFetch__ = undiciFetch;
-      }
-    } catch (err) {
-      logger.warn("autoRunner", "代理配置失败", { error: err?.message });
-    }
-    dispatcherConfigured = true;
-  }
-  const doFetch = async (useProxy) => {
-    if (!useProxy) delete globalThis.__binanceFetch__;
-    const fetchImpl = useProxy && globalThis.__binanceFetch__ ? globalThis.__binanceFetch__ : fetch;
-    const urlObj = new URL(url);
-    urlObj.searchParams.set("timestamp", Date.now().toString());
-    const qs = urlObj.searchParams.toString();
-    const signature = crypto.createHmac("sha256", API_SECRET).update(qs).digest("hex");
-    urlObj.searchParams.set("signature", signature);
-
-    const resp = await fetchImpl(urlObj.toString(), {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (AutoRunner Binance Sync)",
-        "X-MBX-APIKEY": API_KEY,
-      },
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Binance request failed ${resp.status}: ${text || url}`);
-    }
-    return resp.json();
-  };
-  try {
-    return await doFetch(true);
-  } catch (error) {
-    if (String(error?.message || "").includes("fetch failed")) {
-      logger.warn("autoRunner", "代理请求失败，尝试直连", {
-        error: error?.message,
-      });
-      return await doFetch(false);
-    }
-    throw error;
-  }
-}
-
 async function callInternalApi(path, { method = "POST" } = {}) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  const base = process.env.INTERNAL_API_BASE_URL || process.env.NEXT_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error(
+      "INTERNAL_API_BASE_URL (or NEXT_PUBLIC_BASE_URL) is required for worker internal API calls."
+    );
+  }
   const url = new URL(path, base);
   const resp = await fetch(url.toString(), { method });
   if (!resp.ok) {
@@ -192,10 +141,33 @@ async function syncRiskAndFunding(symbols = []) {
   }
 }
 
+async function withAdvisoryLock(lockKey, fn) {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    "SELECT pg_try_advisory_lock($1, $2) AS locked",
+    [ADVISORY_LOCK_NAMESPACE, lockKey]
+  );
+  const locked = Boolean(rows?.[0]?.locked);
+  if (!locked) {
+    return { skipped: true };
+  }
+
+  try {
+    const result = await fn();
+    return { skipped: false, result };
+  } finally {
+    await pool.query("SELECT pg_advisory_unlock($1, $2)", [
+      ADVISORY_LOCK_NAMESPACE,
+      lockKey,
+    ]);
+  }
+}
+
 async function runMarketSyncCycle() {
   if (marketLoopState.running) return;
   marketLoopState.running = true;
   try {
+    const lock = await withAdvisoryLock(LOCK_KEY_MARKET_LOOP, async () => {
     const now = Date.now();
     await loadAllModelAllowedSymbols();
     const symbols = getTrackedSymbols();
@@ -226,31 +198,32 @@ async function runMarketSyncCycle() {
       }
     }
 
-    const updated = await updateMarketPricesFromBinance();
-
-    const benchmark = await updateBtcBenchmark();
-  
-
-    const mtmResult = await markToMarketAllModels();
+      await updateMarketPricesFromBinance();
+      await updateBtcBenchmark();
+      await markToMarketAllModels();
 
 
-    const riskNow = Date.now();
-    if (riskNow - (marketLoopState.lastRiskSyncTs ?? 0) >= AUTO_SYNC_RISK_MS) {
-      marketLoopState.lastRiskSyncTs = riskNow;
-      const symbols = getTrackedSymbols();
-      syncRiskAndFunding(symbols)
-        .then(() =>
-          logger.info("autoRunner", "定时同步风险/资金费完成", {
-            symbols,
-            interval_ms: AUTO_SYNC_RISK_MS,
-          })
-        )
-        .catch((err) =>
-          logger.warn("autoRunner", "定时同步风险/资金费失败", {
-            error: err?.message,
-            symbols,
-          })
-        );
+      const riskNow = Date.now();
+      if (riskNow - (marketLoopState.lastRiskSyncTs ?? 0) >= AUTO_SYNC_RISK_MS) {
+        marketLoopState.lastRiskSyncTs = riskNow;
+        const symbols = getTrackedSymbols();
+        syncRiskAndFunding(symbols)
+          .then(() =>
+            logger.info("autoRunner", "定时同步风险/资金费完成", {
+              symbols,
+              interval_ms: AUTO_SYNC_RISK_MS,
+            })
+          )
+          .catch((err) =>
+            logger.warn("autoRunner", "定时同步风险/资金费失败", {
+              error: err?.message,
+              symbols,
+            })
+          );
+      }
+    });
+    if (lock.skipped) {
+      logger.info("autoRunner", "市场循环跳过：锁已被其他 worker 持有");
     }
 
   } catch (error) {
@@ -319,6 +292,7 @@ async function tick() {
   globalState.running = true;
 
   try {
+    const lock = await withAdvisoryLock(LOCK_KEY_DISPATCH_TICK, async () => {
     // 步骤 1.5：每次 tick 优先尝试刷新市场价格与 BTC 基准线
     try {
       await updateMarketPricesFromBinance();
@@ -408,6 +382,10 @@ async function tick() {
     });
 
     await Promise.allSettled(tasks);
+    });
+    if (lock.skipped) {
+      logger.info("autoRunner", "调度 tick 跳过：锁已被其他 worker 持有");
+    }
   } catch (error) {
     // 若出现意料之外的顶层异常（例如数据库不可用等），统一在此兜底
     logger.error("autoRunner", "tick error", { error: error?.message });

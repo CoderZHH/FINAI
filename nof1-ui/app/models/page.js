@@ -165,7 +165,14 @@ function PlaceholderChips({ tokens }) {
   );
 }
 
-function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
+function TemplateCard({
+  template,
+  active,
+  onSelect,
+  onDuplicate,
+  onDelete,
+  readOnly = false,
+}) {
   return (
     <div
       className={clsx(
@@ -213,6 +220,7 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
         <button
           type="button"
           onClick={() => onDuplicate(template)}
+          disabled={readOnly}
           className="rounded-xl bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-200 active:scale-95"
           title="复制"
         >
@@ -223,6 +231,7 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
         <button
           type="button"
           onClick={() => onDelete(template)}
+          disabled={readOnly}
           className="rounded-xl bg-gray-100 px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 active:scale-95"
           title="删除"
         >
@@ -235,7 +244,16 @@ function TemplateCard({ template, active, onSelect, onDuplicate, onDelete }) {
   );
 }
 
-function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeholders }) {
+function TemplateDrawer({
+  open,
+  onClose,
+  draft,
+  onChange,
+  onSave,
+  saving,
+  placeholders,
+  readOnly = false,
+}) {
   const systemRef = useRef(null);
   const userRef = useRef(null);
   const [activeField, setActiveField] = useState("system_prompt");
@@ -295,7 +313,10 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        <fieldset
+          disabled={readOnly}
+          className="flex-1 overflow-y-auto p-6 space-y-8"
+        >
           {/* Basic Info */}
           <div className="space-y-4">
             <div>
@@ -397,7 +418,7 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
               </div>
             </div>
           </div>
-        </div>
+        </fieldset>
 
         {/* Footer */}
         <div className="border-t border-gray-100 px-6 py-4 bg-gray-50/50 flex justify-end gap-3 sticky bottom-0">
@@ -411,10 +432,10 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
             <button
               type="submit"
               onClick={(e) => { e.preventDefault(); onSave(); }}
-              disabled={saving}
+              disabled={readOnly || saving}
               className="px-6 py-2.5 rounded-xl text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-                {saving ? "保存中..." : "保存模板"}
+                {readOnly ? "游客只读" : saving ? "保存中..." : "保存模板"}
             </button>
         </div>
       </div>
@@ -422,7 +443,18 @@ function TemplateDrawer({ open, onClose, draft, onChange, onSave, saving, placeh
   );
 }
 
-function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateTemplates, drawerOpen, setDrawerOpen, draft, setDraft }) {
+function PromptTemplatesPanel({
+  templates,
+  placeholders,
+  loading,
+  error,
+  mutateTemplates,
+  drawerOpen,
+  setDrawerOpen,
+  draft,
+  setDraft,
+  readOnly = false,
+}) {
   const [feedback, setFeedback] = useState(null);
   const [panelError, setPanelError] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -447,6 +479,7 @@ function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateT
   };
 
   const handleDuplicate = (template) => {
+    if (readOnly) return;
     openDrawer({
       ...template,
       id: null,
@@ -456,6 +489,7 @@ function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateT
   };
 
   const handleDelete = async (template) => {
+    if (readOnly) return;
     if (!window.confirm(`确定删除模板「${template.template_name}」吗？`)) {
       return;
     }
@@ -475,7 +509,7 @@ function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateT
   };
 
   const handleSave = async () => {
-    if (!draft) return;
+    if (readOnly || !draft) return;
     setSaving(true);
     setPanelError(null);
     setFeedback(null);
@@ -546,6 +580,7 @@ function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateT
               onSelect={() => openDrawer(template)}
               onDuplicate={handleDuplicate}
               onDelete={handleDelete}
+              readOnly={readOnly}
             />
           ))}
         </div>
@@ -559,6 +594,7 @@ function PromptTemplatesPanel({ templates, placeholders, loading, error, mutateT
         onSave={handleSave}
         saving={saving}
         placeholders={placeholders}
+        readOnly={readOnly}
       />
     </div>
   );
@@ -596,7 +632,7 @@ function ModelAvatar({ icon, size = "lg" }) {
   );
 }
 
-function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
+function ModelCard({ model, onEdit, onDelete, onToggleAutoRun, readOnly = false }) {
   const runningLabel = model.auto_run_enabled
     ? `运行中 · ${model.auto_run_interval_minutes || 5}m`
     : "已暂停";
@@ -620,7 +656,12 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
   return (
     <div
       onClick={() => onEdit(model)}
-      className="group relative flex flex-col justify-between overflow-hidden rounded-3xl border border-gray-200 bg-white p-6 transition-all duration-300 hover:shadow-xl hover:shadow-gray-200/50 hover:-translate-y-0.5 cursor-pointer"
+      className={clsx(
+        "group relative flex flex-col justify-between overflow-hidden rounded-3xl border border-gray-200 bg-white p-6 transition-all duration-300",
+        readOnly
+          ? "cursor-default"
+          : "cursor-pointer hover:-translate-y-0.5 hover:shadow-xl hover:shadow-gray-200/50"
+      )}
     >
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -646,6 +687,7 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
         <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
             <button
                 onClick={(e) => { e.stopPropagation(); onToggleAutoRun(model); }}
+                disabled={readOnly}
                 className={clsx(
                     "p-2 rounded-full transition-colors",
                     model.auto_run_enabled ? "bg-amber-100 text-amber-600 hover:bg-amber-200" : "bg-green-100 text-green-600 hover:bg-green-200"
@@ -662,6 +704,7 @@ function ModelCard({ model, onEdit, onDelete, onToggleAutoRun }) {
             </button>
             <button
                 onClick={(e) => { e.stopPropagation(); onDelete(model); }}
+                disabled={readOnly}
                 className="p-2 rounded-full bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 transition-colors"
                 title="删除模型"
             >
@@ -712,6 +755,7 @@ function FormModal({
   symbols = [],
   onOpenSymbolDrawer = () => {},
   onLoadMarketList = () => {},
+  readOnly = false,
 }) {
   const isEdit = mode === "edit";
   const templateOptions = promptTemplates || [];
@@ -861,6 +905,7 @@ function FormModal({
       </div>
 
       <form onSubmit={onSubmit} className="space-y-6">
+        <fieldset disabled={readOnly} className="space-y-6">
         <div className="space-y-4">
             <label className="block">
                 <span className="text-sm font-medium text-gray-700 mb-1.5 block">显示名称</span>
@@ -1084,6 +1129,7 @@ function FormModal({
             </div>
         </div>
 
+        </fieldset>
         <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
             <button
                 type="button"
@@ -1094,10 +1140,10 @@ function FormModal({
             </button>
             <button
                 type="submit"
-                disabled={saving}
+                disabled={readOnly || saving}
                 className="px-6 py-2.5 rounded-xl text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-                {saving ? "保存中..." : "保存配置"}
+                {readOnly ? "游客只读" : saving ? "保存中..." : "保存配置"}
             </button>
         </div>
       </form>
@@ -1106,6 +1152,9 @@ function FormModal({
 }
 
 export default function ModelsPage() {
+  const { data: meData } = useSWR("/api/auth/me", fetcher, {
+    revalidateOnFocus: false,
+  });
   const { data, error, isLoading, mutate } = useSWR("/api/models?includeSecrets=false", fetcher);
   const models = useMemo(() => {
     return (data?.models ?? [])
@@ -1173,8 +1222,13 @@ export default function ModelsPage() {
   const [riskModalOpen, setRiskModalOpen] = useState(false);
   const [riskDraft, setRiskDraft] = useState([]);
   const [riskSaving, setRiskSaving] = useState(false);
+  const guestMode = Boolean(meData?.user?.guest);
   // 确保按钮闭包能取到最新引用
   const openSymbolDrawer = () => setSymbolDrawerOpen(true);
+
+  const denyGuestAction = (message = "游客模式仅可查看，无法执行该操作") => {
+    setErrorMessage(message);
+  };
 
   const closeModal = () => {
     setModalState({ open: false, mode: "create" });
@@ -1193,6 +1247,10 @@ export default function ModelsPage() {
   };
 
   const openCreate = () => {
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     const fallbackTemplateId =
       defaultTemplateId || promptTemplates?.[0]?.id || "";
     setModalState({ open: true, mode: "create" });
@@ -1209,6 +1267,10 @@ export default function ModelsPage() {
   };
 
   const openCreateTemplate = () => {
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     setTemplateDraft({
       id: null,
       template_name: "新模板",
@@ -1254,6 +1316,10 @@ export default function ModelsPage() {
   };
 
   const handleDelete = async (model) => {
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     if (!window.confirm(`确定删除模型「${model.display_name || model.model_id}」吗？`)) {
       return;
     }
@@ -1268,6 +1334,10 @@ export default function ModelsPage() {
   };
 
   const handleToggleAutoRun = async (model) => {
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     const response = await fetch(`/api/models/${model.model_id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1283,6 +1353,10 @@ export default function ModelsPage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     setSaving(true);
     setErrorMessage(null);
 
@@ -1418,6 +1492,10 @@ export default function ModelsPage() {
   };
 
   const saveRiskDraft = async () => {
+    if (guestMode) {
+      denyGuestAction();
+      return;
+    }
     if (!riskDraft.length) {
       setRiskModalOpen(false);
       return;
@@ -1496,6 +1574,7 @@ export default function ModelsPage() {
           <button
             type="button"
             onClick={openCreate}
+            disabled={guestMode}
             className="group inline-flex items-center justify-center gap-2 rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-gray-200 transition-all duration-200 hover:bg-gray-800 hover:shadow-xl hover:-translate-y-0.5 active:scale-95"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1507,6 +1586,7 @@ export default function ModelsPage() {
           <button
             type="button"
             onClick={openCreateTemplate}
+            disabled={guestMode}
             className="group inline-flex items-center justify-center gap-2 rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-gray-200 transition-all duration-200 hover:bg-gray-800 hover:shadow-xl hover:-translate-y-0.5 active:scale-95"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1516,6 +1596,12 @@ export default function ModelsPage() {
           </button>
         )}
       </div>
+
+      {guestMode ? (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          当前为游客模式：可查看模型与模板，但无法新建、修改、删除或切换自动运行。
+        </div>
+      ) : null}
 
       {/* 成功提示 - 优化动画 */}
       {feedback ? (
@@ -1564,6 +1650,7 @@ export default function ModelsPage() {
               onEdit={openEdit}
               onDelete={handleDelete}
               onToggleAutoRun={handleToggleAutoRun}
+              readOnly={guestMode}
             />
           ))}
         </div>
@@ -1580,6 +1667,7 @@ export default function ModelsPage() {
           setDrawerOpen={setTemplateDrawerOpen}
           draft={templateDraft}
           setDraft={setTemplateDraft}
+          readOnly={guestMode}
         />
       ) : null}
 
@@ -1597,6 +1685,7 @@ export default function ModelsPage() {
             symbols={symbolOptions}
             onOpenSymbolDrawer={() => setSymbolDrawerOpen(true)}
             onLoadMarketList={() => loadMarketList()}
+            readOnly={guestMode}
           />
         </div>
       ) : null}

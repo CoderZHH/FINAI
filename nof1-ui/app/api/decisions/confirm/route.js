@@ -4,6 +4,7 @@ import {
 } from "../../../../lib/data/dataRepository";
 import { applyDecisionSet } from "../../../../lib/trading/decisionExecutor";
 import { ensureMarketSymbol } from "../../../../lib/market/symbols";
+import { requirePrincipal } from "../../../../lib/auth/requestAuth.js";
 
 function normalizeDecisionInput(raw) {
   if (!raw) return {};
@@ -34,6 +35,9 @@ function normalizeDecisionInput(raw) {
 }
 
 export async function POST(request) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const payload = await request.json();
   const decisionId = payload?.decision_id;
   const action = String(payload?.action ?? "").toLowerCase();
@@ -42,7 +46,7 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid payload" }, { status: 400 });
   }
 
-  const pending = await getPendingDecisionById(decisionId);
+  const pending = await getPendingDecisionById(decisionId, { ownerUserId: principal.userId });
   if (!pending) {
     return Response.json({ ok: false, error: "Decision not found" }, { status: 404 });
   }

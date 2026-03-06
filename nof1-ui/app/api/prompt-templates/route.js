@@ -3,8 +3,11 @@ import {
   createPromptTemplate,
   listPromptTemplates,
 } from "../../../lib/data/dataRepository";
+import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 
 export async function GET(request) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: false });
+  if (!auth.ok) return auth.response;
   const url = new URL(request.url);
   const includeContent = url.searchParams.get("includeContent") !== "false";
   const templates = await listPromptTemplates({ includeContent });
@@ -12,6 +15,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
   try {
     const payload = await request.json();
     const template = await createPromptTemplate({

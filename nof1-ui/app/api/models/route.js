@@ -5,12 +5,10 @@ import {
   loadAllModelAllowedSymbols,
   updateMarketPricesFromBinance,
 } from "../../../lib/data/dataRepository";
-import { ensureAutoRunner } from "../../../lib/trading/autoRunner";
 import { importMarketData, syncLatestMarketData } from "../../../lib/market/marketImporter.js";
 import { getLatestMarketHistoryTimestamp } from "../../../lib/data/dataRepository.js";
 import { logger } from "@/lib/infrastructure/logManager";
-
-ensureAutoRunner();
+import { requirePrincipal } from "../../../lib/auth/requestAuth.js";
 
 function slugifyDisplayName(name) {
   return name
@@ -88,19 +86,26 @@ function compactModelResponse(model) {
 }
 
 export async function GET(request) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: false });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   const url = new URL(request.url);
   const includeSecrets = url.searchParams.get("includeSecrets") === "true";
   const includeDisabled = url.searchParams.get("includeDisabled") !== "false";
 
   const models = await listAgentModels({
     includeDisabled,
-    includeSecrets,
+    includeSecrets: includeSecrets && principal.kind !== "guest",
+    ownerUserId: principal.userId,
   });
 
   return Response.json({ models: models.map(compactModelResponse) });
 }
 
 export async function POST(request) {
+  const auth = await requirePrincipal(request, { allowGuest: true, requireWrite: true });
+  if (!auth.ok) return auth.response;
+  const principal = auth.principal;
   try {
     const payload = await request.json();
     const rawDisplayName =
@@ -139,6 +144,7 @@ export async function POST(request) {
         typeof payload.display_icon === "string" ? payload.display_icon : undefined,
       margin_config: normalizeMarginConfigInput(payload.margin_config),
       allowed_symbols: normalizeAllowedSymbolsInput(payload.allowed_symbols),
+      owner_user_id: principal.userId,
     };
     if (!cleanPayload.allowed_symbols.length) {
       return Response.json({ error: "allowed_symbols cannot be empty" }, { status: 400 });
@@ -165,8 +171,12 @@ export async function POST(request) {
         await syncLatestMarketData(symbolsNeedingSync);
       }
       const symbolParam = encodeURIComponent(cleanPayload.allowed_symbols.join(","));
-      await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/risk?symbols=${symbolParam}`, { method: "POST" });
-      await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/binance/funding?symbols=${symbolParam}`, { method: "POST" });
+      const internalBase =
+        process.env.INTERNAL_API_BASE_URL ||
+        process.env.NEXT_PUBLIC_BASE_URL ||
+        new URL(request.url).origin;
+      await fetch(`${internalBase}/api/binance/risk?symbols=${symbolParam}`, { method: "POST" });
+      await fetch(`${internalBase}/api/binance/funding?symbols=${symbolParam}`, { method: "POST" });
     } catch (seedErr) {
       logger.warn("api:models", "冷启动行情/风险同步失败", { error: seedErr?.message });
     }

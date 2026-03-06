@@ -33,7 +33,7 @@ import {
   updatePendingDecisionStatus,
 } from "../data/dataRepository.js";
 import { buildPromptReplacements } from "../llm/promptBuilder.js";
-import { callLLM } from "../llm/llmClient";
+import { callLLM } from "../llm/llmClient.ts";
 import { applyDecisionSet } from "./decisionExecutor.js";
 import { logger } from "../infrastructure/logManager.js";
 

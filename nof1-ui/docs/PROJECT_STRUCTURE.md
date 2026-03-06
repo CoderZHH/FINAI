@@ -14,13 +14,12 @@
 ## 核心库（nof1-ui/lib）
 ### 基础设施
 - `db.js`：PostgreSQL 连接池。
-- `redis.js`：Redis 客户端。
 - `logManager.js`：统一日志缓冲与 SSE 推送。
 - `simConfig.js`：模拟手续费配置缓存/读写。
 - `simSettingsService.js`：风险限额持久化工具。
 
 ### 数据与市场
-- `dataRepository.js`：DB/Redis 读写总线，账户/行情/日志/交易等 CRUD。
+- `dataRepository.js`：DB 读写总线，账户/行情/日志/交易等 CRUD。
 - `marketImporter.js`：从 Binance 拉取 kline/指标写入 `market_price_history`。
 - `symbols.js`：交易对标准化与默认符号解析。
 - `riskLimits.js`：风险分层读取与计算。
@@ -28,6 +27,7 @@
 
 ### 交易执行与风控
 - `autoRunner.js`：市场循环 + 模型自动调度。
+- `scripts/worker.js`：独立 worker 入口（生产环境建议由该进程托管 autoRunner）。
 - `decisionEngine.js`：构建 Prompt 调用 LLM。
 - `decisionExecutor.js`：解析决策、落地 trades/仓位。
 - `liquidationEngine.js`：强平流程。

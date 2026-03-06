@@ -9,7 +9,8 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
    cd nof1-ui
    npm install
    ```
-2. **Environment** – copy `.env.example` to `.env.local` and fill `POSTGRES_URL`, `POSTGRES_SSL` (if needed), `REDIS_URL`, and LLM credentials (`api_base_url` / `api_key`).
+2. **Environment** – copy `.env.example` to `.env.local` and fill `POSTGRES_URL`, `POSTGRES_SSL` (if needed), plus LLM credentials (`api_base_url` / `api_key`).
+   For production access control, set `FINAI_BASIC_AUTH_USER` and `FINAI_BASIC_AUTH_PASS`.
 3. **Database reset** (dev server already runs this)
    ```bash
    node scripts/reset-db.js
@@ -19,6 +20,7 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
    npm run dev
    ```
    The dev server automatically starts the auto-runner loop that pulls Binance candles, updates the BTC benchmark, and schedules enabled agent models.
+   For production (especially Vercel), run auto-runner in an independent worker process via `npm run worker`.
 
 ## Core Concepts
 
@@ -89,3 +91,8 @@ FINAI is an AI-assisted quantitative trading simulator built on Next.js. It keep
 - 日志与调试 (app/api/logs)  
   - SSE 输出 Log Console，含 LLM 请求/回应、决策链、风险结果。  
   - 错误/警告会带计算前缀，便于过滤。
+
+## Deployment Notes
+
+- Worker 部署方案：`docs/VERCEL_WORKER_PLAN.md`
+- 数据库上线方案：`docs/DEPLOY_DATABASE.md`

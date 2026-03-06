@@ -36,6 +36,9 @@ function Hint({ text }) {
 }
 
 export default function SettingsPage() {
+  const { data: meData } = useSWR("/api/auth/me", fetcher, {
+    revalidateOnFocus: false,
+  });
   const { data: configData } = useSWR("/api/sim-config", fetcher, {
     revalidateOnFocus: false,
     revalidateOnReconnect: false,
@@ -62,6 +65,7 @@ export default function SettingsPage() {
   const [formState, setFormState] = useState(null);
   const [savingSection, setSavingSection] = useState(null);
   const [status, setStatus] = useState("");
+  const guestMode = Boolean(meData?.user?.guest);
 
   useEffect(() => {
     if (configData) {
@@ -70,6 +74,7 @@ export default function SettingsPage() {
   }, [configData]);
 
   const handleFeeChange = (symbol, field, value) => {
+    if (guestMode) return;
     setFormState((prev) => {
       const next = clone(prev ?? {});
       next.fees = next.fees ?? { default: { maker: 0, taker: 0 } };
@@ -82,6 +87,10 @@ export default function SettingsPage() {
 
   const saveConfig = async (label, section) => {
     if (!formState) return;
+    if (guestMode) {
+      setStatus("游客模式仅可查看，无法保存设置");
+      return;
+    }
     const payloadToSend = clone(formState);
     setSavingSection(section);
     setStatus("");
@@ -109,6 +118,10 @@ export default function SettingsPage() {
   const fundingRates = fundingData?.funding_rates ?? {};
 
   const syncFromBinance = async (scope) => {
+    if (guestMode) {
+      setStatus("游客模式仅可查看，无法同步数据");
+      return;
+    }
     setStatus(`正在同步 ${scope === "risk" ? "风险分层" : "资金费"}...`);
     try {
       const base = scope === "risk" ? "/api/binance/risk" : "/api/binance/funding";
@@ -167,6 +180,11 @@ export default function SettingsPage() {
           返回主界面
         </Link>
       </div>
+      {guestMode ? (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          当前为游客模式：设置页仅可查看，不能修改或同步。
+        </div>
+      ) : null}
 
       <SectionCard
         title="手续费费率"
@@ -175,7 +193,7 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={() => saveConfig("手续费", "fees")}
-            disabled={savingSection === "fees"}
+            disabled={guestMode || savingSection === "fees"}
             className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700 disabled:opacity-50"
           >
             {savingSection === "fees" ? "保存中..." : "保存手续费设置"}
@@ -192,6 +210,7 @@ export default function SettingsPage() {
               type="number"
               step="0.00001"
               className="rounded-lg border border-neutral-300 px-3 py-2 text-sm shadow-sm"
+              disabled={guestMode}
               value={formState.fees?.default?.maker ?? 0}
               onChange={(event) =>
                 handleFeeChange(
@@ -211,6 +230,7 @@ export default function SettingsPage() {
               type="number"
               step="0.00001"
               className="rounded-lg border border-neutral-300 px-3 py-2 text-sm shadow-sm"
+              disabled={guestMode}
               value={formState.fees?.default?.taker ?? 0}
               onChange={(event) =>
                 handleFeeChange(
@@ -231,6 +251,7 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={handleSyncRisk}
+            disabled={guestMode}
             className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700"
           >
             同步风险分层
@@ -279,6 +300,7 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={handleSyncFunding}
+            disabled={guestMode}
             className="rounded-full bg-neutral-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-neutral-700"
           >
             刷新资金费

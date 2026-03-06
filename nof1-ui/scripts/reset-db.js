@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 import path from "node:path";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadEnvFromFile } from "./utils/loadEnv.js";
 import { logger } from "../lib/infrastructure/logManager.js";
@@ -130,8 +131,32 @@ async function seedSimSettings(pool) {
   logger.info(LOG_MODULE, "sim_settings seeded.");
 }
 
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hashed = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hashed}`;
+}
+
+async function seedRootUser(pool) {
+  const rootUsername = process.env.FINAI_ROOT_USERNAME || "root";
+  const rootPassword = process.env.FINAI_ROOT_PASSWORD || "root";
+  const rootPasswordHash = hashPassword(rootPassword);
+  await pool.query(
+    `
+    INSERT INTO users (username, password_hash, role)
+    VALUES ($1, $2, 'SUPER_ADMIN')
+    ON CONFLICT (username) DO UPDATE
+    SET role = EXCLUDED.role,
+        password_hash = EXCLUDED.password_hash,
+        updated_at = now()
+    `,
+    [rootUsername, rootPasswordHash]
+  );
+  logger.info(LOG_MODULE, "root user ensured.", { username: rootUsername });
+}
+
 async function dropExistingTables(pool) {
   const tables = [
+    "user_sessions",
     "risk_limits",
     "insurance_fund",
     "sim_settings",
@@ -146,6 +171,7 @@ async function dropExistingTables(pool) {
     "agent_models",
     "prompt_templates",
     "prompt_placeholders",
+    "users",
   ];
 
   for (const table of tables) {
@@ -156,6 +182,31 @@ async function dropExistingTables(pool) {
 async function ensureSchema(pool) {
   await pool.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto";');
   await dropExistingTables(pool);
+
+  await pool.query(`
+    CREATE TABLE users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'USER',
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE user_sessions (
+      token TEXT PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX user_sessions_user_id_idx
+    ON user_sessions(user_id);
+  `);
 
   await pool.query(`
     CREATE TABLE prompt_templates (
@@ -176,6 +227,7 @@ async function ensureSchema(pool) {
   await pool.query(`
     CREATE TABLE agent_models (
       model_id TEXT PRIMARY KEY,
+      owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       display_name TEXT NOT NULL,
       provider TEXT,
       llm_model TEXT,
@@ -387,6 +439,7 @@ async function ensureSchema(pool) {
 
 async function truncateTables(pool) {
   const tables = [
+    "user_sessions",
     "risk_limits",
     "insurance_fund",
     "sim_settings",
@@ -398,6 +451,7 @@ async function truncateTables(pool) {
     "market_prices",
     "agent_models",
     "prompt_templates",
+    "users",
   ];
 
   for (const table of tables) {
@@ -405,7 +459,7 @@ async function truncateTables(pool) {
   }
 }
 
-async function main() {
+export async function main() {
   logger.info(LOG_MODULE, "== Database reset ==");
   const pool = await getPool();
 
@@ -418,6 +472,9 @@ async function main() {
 
     logger.info(LOG_MODULE, "Seeding default prompt template...");
     await seedDefaultPromptTemplate(pool);
+
+    logger.info(LOG_MODULE, "Seeding root user...");
+    await seedRootUser(pool);
 
     logger.info(LOG_MODULE, "Seeding risk limits...");
     await seedRiskLimits(pool);

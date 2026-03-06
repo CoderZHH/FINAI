@@ -12,7 +12,7 @@ const fetcher = (url) => fetch(url).then((response) => response.json());
 const BASELINE_MODEL_ID = "btc_benchmark";
 const ChartInner = dynamic(() => import("./ChartInner"), { ssr: false });
 
-function PendingCard({ entry, iconMap, onAction }) {
+function PendingCard({ entry, iconMap, onAction, readOnly = false }) {
   const [expanded, setExpanded] = useState(false);
   const [editText, setEditText] = useState(() => {
     const src =
@@ -46,6 +46,10 @@ function PendingCard({ entry, iconMap, onAction }) {
     "";
 
   const handleAction = async (action) => {
+    if (readOnly) {
+      setError("游客模式仅可查看，无法提交审核结果");
+      return;
+    }
     try {
       setSubmitting(true);
       setError("");
@@ -161,16 +165,16 @@ function PendingCard({ entry, iconMap, onAction }) {
           <button
             className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-[11px] font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:border-gray-300 active:scale-95 disabled:opacity-50"
             onClick={() => handleAction("reject")}
-            disabled={submitting}
+            disabled={readOnly || submitting}
           >
             拒绝
           </button>
           <button
             className="rounded-xl bg-gray-900 px-4 py-2 text-[11px] font-semibold text-white shadow-lg shadow-gray-200 transition-all hover:bg-black hover:-translate-y-0.5 active:scale-95 disabled:opacity-50"
             onClick={() => handleAction("approve")}
-            disabled={submitting}
+            disabled={readOnly || submitting}
           >
-            {submitting ? "提交中..." : "批准执行"}
+            {readOnly ? "游客只读" : submitting ? "提交中..." : "批准执行"}
           </button>
         </div>
       </div>
@@ -217,6 +221,7 @@ function PendingCard({ entry, iconMap, onAction }) {
                   className="h-48 w-full resize-none border-0 bg-transparent p-3 font-mono text-[11px] leading-relaxed text-gray-600 focus:ring-0 outline-none"
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
+                  readOnly={readOnly}
                   spellCheck={false}
                 />
               </div>
@@ -492,7 +497,7 @@ function CompletedPanel() {
 }
 
 /** ---------- 策略确认面板 ---------- */
-function DecisionPanel() {
+function DecisionPanel({ readOnly = false }) {
   const { data, mutate } = useSWR("/api/decisions/pending", fetcher, {
     refreshInterval: 8000,
   });
@@ -504,12 +509,18 @@ function DecisionPanel() {
 
   return (
     <div className="space-y-3">
+      {readOnly ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          游客模式下可查看提案详情，但不能批准或拒绝。
+        </div>
+      ) : null}
       {pending.map((entry) => (
         <PendingCard
           key={entry.id ?? `${entry.model_id}-${entry.timestamp}`}
           entry={entry}
           iconMap={{}}
           onAction={() => mutate()}
+          readOnly={readOnly}
         />
       ))}
     </div>
@@ -720,6 +731,10 @@ function ProposalPanel() {
 
 export default function RightFeed() {
   const [activeTab, setActiveTab] = useState("positions");
+  const { data: meData } = useSWR("/api/auth/me", fetcher, {
+    revalidateOnFocus: false,
+  });
+  const guestMode = Boolean(meData?.user?.guest);
   const { data: modelsData } = useSWR("/api/models?includeSecrets=false", fetcher);
   const iconMap = useMemo(() => {
     const map = {};
@@ -749,7 +764,7 @@ export default function RightFeed() {
       <div className="flex-1 overflow-y-auto px-3 py-4">
         {activeTab === "positions" && <PositionsPanel iconMap={iconMap} />}
         {activeTab === "completed" && <CompletedPanel />}
-        {activeTab === "decision" && <DecisionPanel />}
+        {activeTab === "decision" && <DecisionPanel readOnly={guestMode} />}
         {activeTab === "modelchat" && <ModelChatPanel iconMap={iconMap} />}
         {activeTab === "proposal" && <ProposalPanel />}
       </div>
