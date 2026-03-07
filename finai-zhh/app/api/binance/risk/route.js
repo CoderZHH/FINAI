@@ -7,12 +7,22 @@ import { listRiskLimits, upsertRiskLimits } from "../../../../lib/data/simSettin
 import { ensureMarketSymbol } from "../../../../lib/market/symbols.js";
 import { logger } from "../../../../lib/infrastructure/logManager.js";
 
+const BINANCE_USE_TESTNET =
+  process.env.BINANCE_TESTNET === "true" || !!process.env.BINANCE_API_KEY_TEST;
+
 const BINANCE_FAPI_BASE = (() => {
+  if (BINANCE_USE_TESTNET) {
+    return process.env.BINANCE_FAPI_BASE_TEST || "https://demo-fapi.binance.com";
+  }
   const base = process.env.BINANCE_FAPI_BASE || "https://fapi.binance.com";
   return base;
 })();
-const API_KEY = process.env.BINANCE_API_KEY;
-const API_SECRET = process.env.BINANCE_API_SECRET;
+const API_KEY = BINANCE_USE_TESTNET
+  ? process.env.BINANCE_API_KEY_TEST || process.env.BINANCE_API_KEY
+  : process.env.BINANCE_API_KEY;
+const API_SECRET = BINANCE_USE_TESTNET
+  ? process.env.BINANCE_API_SECRET_TEST || process.env.BINANCE_API_SECRET
+  : process.env.BINANCE_API_SECRET;
 
 let dispatcherConfigured = false;
 let proxyAgent = null;
