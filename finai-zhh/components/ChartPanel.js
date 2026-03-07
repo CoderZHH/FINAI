@@ -155,8 +155,15 @@ function deriveChartData(seriesMeta, viewMode) {
         });
       }
 
-      const rawDollar = Number(point.dollar_equity ?? point.equity ?? 0);
-      const rawPercent = Number((point.cum_pnl_pct ?? 0) * 100);
+      const rawDollarSource = point.dollar_equity ?? point.equity;
+      const parsedDollar =
+        rawDollarSource == null ? null : Number(rawDollarSource);
+      const rawDollar =
+        Number.isFinite(parsedDollar) && parsedDollar > 0 ? parsedDollar : null;
+      const parsedPercent =
+        point.cum_pnl_pct == null ? null : Number(point.cum_pnl_pct);
+      const rawPercent =
+        Number.isFinite(parsedPercent) ? parsedPercent * 100 : null;
       const value = viewMode === "dollar" ? rawDollar : rawPercent;
 
       timestampEntries.get(tsBucket)[series.line_key] = value;
@@ -165,7 +172,7 @@ function deriveChartData(seriesMeta, viewMode) {
 
   const rows = Array.from(timestampEntries.values()).sort((a, b) => a.ts - b.ts);
 
-  // 对每条线做前值延续，避免“不同模型更新时刻不一致”造成的密集断点
+  // 模型创建前保持 null，不补 0；创建后只延续最近一个有效值。
   seriesMeta.forEach((series) => {
     let hasStarted = false;
     let lastValue = null;
@@ -284,6 +291,7 @@ function deriveCards(models, legendData, chartRows) {
 export default function ChartPanel() {
   const [viewMode, setViewMode] = useState("dollar");
   const [timeWindow, setTimeWindow] = useState("all");
+  const [activeModelId, setActiveModelId] = useState(null);
 
   const { data: timeseriesData } = useSWR(
     "/api/performance/timeseries",
@@ -453,16 +461,25 @@ export default function ChartPanel() {
           yFormatter={yFormatter}
           valueFormatter={tooltipFormatter}
           xFormatter={formatTimestampLabel}
+          activeModelId={activeModelId}
+          onActiveModelChange={setActiveModelId}
         />
       </div>
 
       {/* 下方卡片区 */}
       <div className="mt-4 border-t pt-3 text-xs">
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3 pb-1">
+        <div className="overflow-x-auto pb-1">
+          <div className="flex min-w-max gap-3">
           {cards.map((item) => (
             <div
               key={item.modelId}
-              className="flex min-h-[120px] flex-col justify-between rounded-xl border border-neutral-300 bg-white px-3 py-2 shadow-sm"
+              onMouseEnter={() => setActiveModelId(item.modelId)}
+              onMouseLeave={() => setActiveModelId(null)}
+              className={`flex min-h-[120px] w-[280px] shrink-0 flex-col justify-between rounded-xl border bg-white px-3 py-2 shadow-sm transition ${
+                activeModelId === item.modelId
+                  ? "border-neutral-900 shadow-md"
+                  : "border-neutral-300"
+              }`}
             >
               <div className="flex items-center gap-2">
                 <span
@@ -494,6 +511,7 @@ export default function ChartPanel() {
               </div>
             </div>
           ))}
+          </div>
         </div>
       </div>
     </section>

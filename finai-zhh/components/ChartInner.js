@@ -199,6 +199,8 @@ export default function ChartInner({
   yFormatter,
   valueFormatter,
   xFormatter,
+  activeModelId,
+  onActiveModelChange,
 }) {
   // ECharts 容器 DOM 引用
   const containerRef = useRef(null);
@@ -255,7 +257,7 @@ export default function ChartInner({
         type: "line",
         color: seriesColor,
         data: values,
-        connectNulls: true,
+        connectNulls: false,
         showSymbol: false, // 不显示数据点标记
         smooth: 0.2, // 平滑曲线（0-1之间，0为折线，1为最平滑）
         emphasis: { focus: "series" }, // 鼠标悬停时高亮整条系列
@@ -389,6 +391,51 @@ export default function ChartInner({
       window.removeEventListener("resize", resize);
     };
   }, [chartOption]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const handleMouseOver = (params = {}) => {
+      if (!onActiveModelChange || params.componentType !== "series") return;
+      const entry = series?.[params.seriesIndex];
+      if (entry?.modelId) {
+        onActiveModelChange(entry.modelId);
+      }
+    };
+
+    const handleGlobalOut = () => {
+      if (onActiveModelChange) {
+        onActiveModelChange(null);
+      }
+    };
+
+    chart.off("mouseover", handleMouseOver);
+    chart.off("globalout", handleGlobalOut);
+    chart.on("mouseover", handleMouseOver);
+    chart.on("globalout", handleGlobalOut);
+
+    return () => {
+      chart.off("mouseover", handleMouseOver);
+      chart.off("globalout", handleGlobalOut);
+    };
+  }, [series, onActiveModelChange]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !Array.isArray(series) || !series.length) return;
+
+    chart.dispatchAction({ type: "downplay" });
+    if (!activeModelId) return;
+
+    const targetIndex = series.findIndex((entry) => entry?.modelId === activeModelId);
+    if (targetIndex >= 0) {
+      chart.dispatchAction({
+        type: "highlight",
+        seriesIndex: targetIndex,
+      });
+    }
+  }, [activeModelId, series, data]);
 
   /**
    * 组件卸载时销毁 ECharts 实例，释放资源
