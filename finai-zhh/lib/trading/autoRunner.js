@@ -77,20 +77,11 @@ const HISTORY_SYNC_MS = 60 * 1000; // 每分钟同步一次完整行情快照
 const ADVISORY_LOCK_NAMESPACE = 61001;
 const LOCK_KEY_MARKET_LOOP = 1;
 const LOCK_KEY_DISPATCH_TICK = 2;
-const BINANCE_USE_TESTNET =
-  process.env.BINANCE_TESTNET === "true" || !!process.env.BINANCE_API_KEY_TEST;
 const BINANCE_FAPI_BASE = (() => {
-  if (BINANCE_USE_TESTNET) {
-    return process.env.BINANCE_FAPI_BASE_TEST || "https://testnet.binancefuture.com";
-  }
   return process.env.BINANCE_FAPI_BASE || "https://fapi.binance.com";
 })();
-const BINANCE_API_KEY = BINANCE_USE_TESTNET
-  ? process.env.BINANCE_API_KEY_TEST || process.env.BINANCE_API_KEY
-  : process.env.BINANCE_API_KEY;
-const BINANCE_API_SECRET = BINANCE_USE_TESTNET
-  ? process.env.BINANCE_API_SECRET_TEST || process.env.BINANCE_API_SECRET
-  : process.env.BINANCE_API_SECRET;
+const BINANCE_API_KEY = process.env.BINANCE_API_KEY;
+const BINANCE_API_SECRET = process.env.BINANCE_API_SECRET;
 
 const globalState = globalThis.__autoRunner__ ?? {
   started: false,

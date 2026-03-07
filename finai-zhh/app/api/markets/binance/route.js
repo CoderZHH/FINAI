@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/infrastructure/logManager";
+import { getPool } from "@/lib/infrastructure/db";
 
 const CACHE_MS = 45_000;
 const globalCache = globalThis.__binanceTickerCache ?? {
@@ -47,6 +48,52 @@ function filterUsdtCandidates(rows = [], q = "") {
       return base.includes(q) || symbol.includes(q);
     })
     .map(mapTickerRow);
+}
+
+async function fetchCandidatesFromDb({ q = "", sort = "volume", limit = 50 } = {}) {
+  const pool = getPool();
+  const sortSql =
+    sort === "percent"
+      ? "change_percent DESC NULLS LAST, volume DESC NULLS LAST"
+      : sort === "price"
+        ? "price DESC NULLS LAST, volume DESC NULLS LAST"
+        : "volume DESC NULLS LAST, price DESC NULLS LAST";
+
+  const query = `
+    SELECT
+      symbol,
+      price,
+      change_percent,
+      high_price,
+      low_price,
+      volume
+    FROM market_prices
+    WHERE symbol ILIKE '%USDT'
+      AND symbol !~* '(UP|DOWN|BEAR|BULL)USDT$'
+      AND (
+        $1 = ''
+        OR upper(symbol) LIKE '%' || $1 || '%'
+        OR upper(replace(symbol, 'USDT', '')) LIKE '%' || $1 || '%'
+      )
+    ORDER BY ${sortSql}
+    LIMIT $2
+  `;
+
+  const { rows } = await pool.query(query, [q, limit]);
+  return rows.map((row) => {
+    const symbol = String(row.symbol || "").toUpperCase();
+    const base = symbol.replace(/USDT$/i, "");
+    return {
+      symbol,
+      base,
+      price: Number(row.price) || 0,
+      changePercent: Number(row.change_percent) || 0,
+      quoteVolume: Number(row.volume) || 0,
+      highPrice: row.high_price == null ? null : Number(row.high_price) || null,
+      lowPrice: row.low_price == null ? null : Number(row.low_price) || null,
+      icon: `https://static.binance.us/assets/coins/${base}.svg`,
+    };
+  });
 }
 
 async function fetchCandidatesFromBinance() {
@@ -94,17 +141,39 @@ export async function GET(request) {
         ? globalCache.data
         : null;
     if (!tickers) {
-      const rows = await fetchCandidatesFromBinance();
-      const filtered = filterUsdtCandidates(rows, q);
-      const sorted = filtered.sort((a, b) => {
-        if (sort === "percent") return (b.changePercent ?? 0) - (a.changePercent ?? 0);
-        if (sort === "price") return (b.price ?? 0) - (a.price ?? 0);
-        return (b.quoteVolume ?? 0) - (a.quoteVolume ?? 0);
-      });
-      tickers = sorted.slice(0, limit);
+      let source = "binance_live_candidates";
+      try {
+        const rows = await fetchCandidatesFromBinance();
+        const filtered = filterUsdtCandidates(rows, q);
+        const sorted = filtered.sort((a, b) => {
+          if (sort === "percent") return (b.changePercent ?? 0) - (a.changePercent ?? 0);
+          if (sort === "price") return (b.price ?? 0) - (a.price ?? 0);
+          return (b.quoteVolume ?? 0) - (a.quoteVolume ?? 0);
+        });
+        tickers = sorted.slice(0, limit);
+      } catch (liveError) {
+        logger.warn("api:markets", "Binance live candidates failed, fallback to DB", {
+          error: liveError?.message,
+        });
+        tickers = await fetchCandidatesFromDb({ q, sort, limit });
+        source = "market_prices_fallback";
+        if (!tickers.length) {
+          throw liveError;
+        }
+      }
       globalCache.key = cacheKey;
-      globalCache.data = tickers;
+      globalCache.data = { tickers, source };
       globalCache.ts = now;
+    }
+    if (tickers?.tickers && Array.isArray(tickers.tickers)) {
+      return NextResponse.json(
+        tickers,
+        {
+          headers: {
+            "Cache-Control": "no-store, max-age=0",
+          },
+        }
+      );
     }
     return NextResponse.json(
       {
