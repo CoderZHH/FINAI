@@ -469,13 +469,13 @@ export default function ChartPanel() {
       {/* 下方卡片区 */}
       <div className="mt-4 border-t pt-3 text-xs">
         <div className="overflow-x-auto pb-1">
-          <div className="flex min-w-max gap-3">
+          <div className="flex min-w-max gap-2">
           {cards.map((item) => (
             <div
               key={item.modelId}
               onMouseEnter={() => setActiveModelId(item.modelId)}
               onMouseLeave={() => setActiveModelId(null)}
-              className={`flex min-h-[120px] w-[280px] shrink-0 flex-col justify-between rounded-xl border bg-white px-3 py-2 shadow-sm transition ${
+              className={`flex min-h-[108px] w-[240px] shrink-0 flex-col justify-between rounded-xl border bg-white px-3 py-2 shadow-sm transition ${
                 activeModelId === item.modelId
                   ? "border-neutral-900 shadow-md"
                   : "border-neutral-300"
@@ -493,17 +493,17 @@ export default function ChartPanel() {
                     renderIcon(item.iconValue)
                   )}
                 </span>
-                <span className="font-semibold tracking-[0.18em]">
+                <span className="text-[15px] font-semibold tracking-[0.08em] leading-none">
                   {item.name}
                 </span>
               </div>
 
-              <div className="mono mt-1 text-neutral-900 text-sm">
+              <div className="mono mt-1 text-[15px] leading-snug text-neutral-900">
                 总权益 {formatUsd(item.latestDollar)}
               </div>
 
               <div
-                className={`text-[11px] font-semibold ${
+                className={`text-[12px] font-semibold leading-snug ${
                   item.pnlAbs >= 0 ? "text-emerald-600" : "text-rose-600"
                 }`}
               >

@@ -241,6 +241,9 @@ export default function ChartInner({
       // 提取该系列在每个时间点的数值
       const values = data.map((row) => {
         const raw = row[entry.lineKey];
+        if (raw == null) {
+          return null;
+        }
         const parsed = Number(raw);
         if (Number.isFinite(parsed)) {
           globalMin = Math.min(globalMin, parsed);
