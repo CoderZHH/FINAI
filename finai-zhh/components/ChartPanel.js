@@ -467,6 +467,7 @@ export default function ChartPanel() {
       {/* 下方卡片区 */}
       <div className="mt-4 border-t pt-3 text-xs">
         <div ref={cardsScrollerRef} className="flex gap-3 overflow-x-auto pb-1">
+          {console.log("render cards", cards)}
           {cards.map((item) => (
             <div
               key={item.modelId}
