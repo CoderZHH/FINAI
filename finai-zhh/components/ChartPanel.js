@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/llm/modelIcons";
@@ -284,6 +284,7 @@ function deriveCards(models, legendData, chartRows) {
 export default function ChartPanel() {
   const [viewMode, setViewMode] = useState("dollar");
   const [timeWindow, setTimeWindow] = useState("all");
+  const cardsScrollerRef = useRef(null);
 
   const { data: timeseriesData } = useSWR(
     "/api/performance/timeseries",
@@ -360,6 +361,13 @@ export default function ChartPanel() {
       ),
     [modelsData, legendData, chartData],
   );
+
+  useEffect(() => {
+    const scroller = cardsScrollerRef.current;
+    if (!scroller || !cards.length) return;
+    if (!cards[0]?.isBenchmark) return;
+    scroller.scrollLeft = 0;
+  }, [cards]);
 
   const nameLookup = useMemo(() => {
     const map = new Map();
@@ -458,7 +466,7 @@ export default function ChartPanel() {
 
       {/* 下方卡片区 */}
       <div className="mt-4 border-t pt-3 text-xs">
-        <div className="flex gap-3 overflow-x-auto pb-1">
+        <div ref={cardsScrollerRef} className="flex gap-3 overflow-x-auto pb-1">
           {cards.map((item) => (
             <div
               key={item.modelId}

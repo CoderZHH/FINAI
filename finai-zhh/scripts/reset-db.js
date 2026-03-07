@@ -261,6 +261,28 @@ async function ensureSchema(pool) {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION enforce_baseline_model_icon()
+    RETURNS trigger AS $$
+    BEGIN
+      IF NEW.model_id ILIKE 'btc_benchmark%'
+         OR lower(COALESCE(NEW.display_name, '')) = 'btc benchmark' THEN
+        NEW.display_icon := '/api/asset-logo?symbol=BTC';
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+  await pool.query(`
+    DROP TRIGGER IF EXISTS agent_models_enforce_baseline_icon
+    ON agent_models
+  `);
+  await pool.query(`
+    CREATE TRIGGER agent_models_enforce_baseline_icon
+    BEFORE INSERT OR UPDATE ON agent_models
+    FOR EACH ROW
+    EXECUTE FUNCTION enforce_baseline_model_icon()
+  `);
 
   await pool.query(`
     CREATE TABLE agent_accounts_runtime (

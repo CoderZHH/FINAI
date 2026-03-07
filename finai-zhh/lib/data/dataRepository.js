@@ -142,6 +142,38 @@ async function ensureAgentModelSchema() {
         ADD COLUMN IF NOT EXISTS llm_model TEXT,
         ADD COLUMN IF NOT EXISTS owner_user_id UUID
     `);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION enforce_baseline_model_icon()
+      RETURNS trigger AS $$
+      BEGIN
+        IF NEW.model_id ILIKE 'btc_benchmark%'
+           OR lower(COALESCE(NEW.display_name, '')) = 'btc benchmark' THEN
+          NEW.display_icon := '${BASELINE_DISPLAY_ICON}';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await pool.query(`
+      DROP TRIGGER IF EXISTS agent_models_enforce_baseline_icon
+      ON agent_models
+    `);
+    await pool.query(`
+      CREATE TRIGGER agent_models_enforce_baseline_icon
+      BEFORE INSERT OR UPDATE ON agent_models
+      FOR EACH ROW
+      EXECUTE FUNCTION enforce_baseline_model_icon()
+    `);
+    await pool.query(
+      `
+      UPDATE agent_models
+      SET display_icon = $1,
+          updated_at = now()
+      WHERE model_id ILIKE 'btc_benchmark%'
+         OR lower(COALESCE(display_name, '')) = 'btc benchmark'
+      `,
+      [BASELINE_DISPLAY_ICON]
+    );
     agentModelSchemaEnsured = true;
   } catch (error) {
     logger.error("dataRepository", "确保 agent_models 表结构失败", {
