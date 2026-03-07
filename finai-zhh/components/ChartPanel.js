@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/llm/modelIcons";
@@ -284,7 +284,6 @@ function deriveCards(models, legendData, chartRows) {
 export default function ChartPanel() {
   const [viewMode, setViewMode] = useState("dollar");
   const [timeWindow, setTimeWindow] = useState("all");
-  const cardsScrollerRef = useRef(null);
 
   const { data: timeseriesData } = useSWR(
     "/api/performance/timeseries",
@@ -361,13 +360,6 @@ export default function ChartPanel() {
       ),
     [modelsData, legendData, chartData],
   );
-
-  useEffect(() => {
-    const scroller = cardsScrollerRef.current;
-    if (!scroller || !cards.length) return;
-    if (!cards[0]?.isBenchmark) return;
-    scroller.scrollLeft = 0;
-  }, [cards]);
 
   const nameLookup = useMemo(() => {
     const map = new Map();
@@ -466,12 +458,11 @@ export default function ChartPanel() {
 
       {/* 下方卡片区 */}
       <div className="mt-4 border-t pt-3 text-xs">
-        <div ref={cardsScrollerRef} className="flex gap-3 overflow-x-auto pb-1">
-          {console.log("render cards", cards)}
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3 pb-1">
           {cards.map((item) => (
             <div
               key={item.modelId}
-              className="flex min-w-[220px] flex-1 flex-col justify-between rounded-xl border border-neutral-300 bg-white px-3 py-2 shadow-sm"
+              className="flex min-h-[120px] flex-col justify-between rounded-xl border border-neutral-300 bg-white px-3 py-2 shadow-sm"
             >
               <div className="flex items-center gap-2">
                 <span

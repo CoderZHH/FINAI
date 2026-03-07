@@ -253,6 +253,7 @@ export default function ChartInner({
       return {
         name: entry.name,
         type: "line",
+        color: seriesColor,
         data: values,
         connectNulls: true,
         showSymbol: false, // 不显示数据点标记
