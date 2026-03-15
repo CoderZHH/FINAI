@@ -10,10 +10,13 @@ import {
 } from "../data/dataRepository.js";
 
 const LOG_MODULE = "marketImporter";
-const BINANCE_FAPI_BASE = (() => {
-  const base = process.env.BINANCE_FAPI_BASE;
-  if (!base) throw new Error("BINANCE_FAPI_BASE is required for market import.");
+const BINANCE_API_BASE = (() => {
+  const base = process.env.BINANCE_API_BASE;
+  if (!base) throw new Error("BINANCE_API_BASE is required for market import.");
   return base;
+})();
+const BINANCE_FAPI_BASE = (() => {
+  return process.env.BINANCE_FAPI_BASE || "https://fapi.binance.com";
 })();
 
 const TIMEFRAME_MIN = "1m";
@@ -33,7 +36,10 @@ const OPEN_INTEREST_PAD_MS = 2 * 60 * 60 * 1000; // 2h window for averaging
 const FUNDING_PAD_MS = 3 * 24 * 60 * 60 * 1000; // 3d window for funding history
 const MINUTE_WARMUP_MS =
   Number(process.env.GET_MARKET_WARMUP_MINUTES ?? 120) * 60 * 1000;
-const HTF_WARMUP_PERIODS = Number(process.env.GET_MARKET_WARMUP_HTF ?? 30);
+const HTF_WARMUP_PERIODS = Math.max(
+  Number(process.env.GET_MARKET_WARMUP_HTF ?? 60),
+  60
+);
 
 let proxyConfigured = false;
 let proxyAgent = null;
@@ -134,7 +140,7 @@ async function fetchBinanceKlines({ symbol, interval, startTime, endTime }) {
   const intervalMs = INTERVAL_MS[interval];
 
   while (cursor < endTime) {
-    const url = new URL("/fapi/v1/klines", BINANCE_FAPI_BASE);
+    const url = new URL("/api/v3/klines", BINANCE_API_BASE);
     url.searchParams.set("symbol", symbol);
     url.searchParams.set("interval", interval);
     url.searchParams.set("limit", MAX_KLINE_LIMIT.toString());

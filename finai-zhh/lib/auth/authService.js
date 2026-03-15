@@ -3,11 +3,15 @@ import { getPool } from "../infrastructure/db.js";
 
 const SESSION_TTL_DAYS = Number(process.env.FINAI_SESSION_TTL_DAYS ?? 30);
 
+// 密码不能明文存储，这里保存的是 "salt:hash"。
+// 即使两个用户用了相同密码，也会因为 salt 不同得到不同的哈希结果。
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   const hashed = crypto.scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hashed}`;
 }
 
+// 校验密码时会拿数据库里的 salt 重新计算哈希，并用 timingSafeEqual
+// 做安全比较，避免因为比较耗时差异泄露信息。
 function verifyPassword(password, storedHash) {
   if (!storedHash || !storedHash.includes(":")) return false;
   const [salt, expected] = storedHash.split(":");
@@ -19,6 +23,8 @@ function verifyPassword(password, storedHash) {
 }
 
 async function ensureAuthSchema() {
+  // 鉴权相关表在第一次使用时自动创建，这样本地开发和新环境初始化时
+  // 不需要额外先跑一套独立 migration。
   const pool = getPool();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -48,6 +54,8 @@ export async function ensureRootUser() {
   await ensureAuthSchema();
   const pool = getPool();
   const passwordHash = hashPassword("root");
+  // root 是游客模式映射的基础账户，也是系统初始化后的默认观察视图。
+  // 这里做成幂等写入，保证每个环境里都始终存在这个账号。
   const { rows } = await pool.query(
     `
     INSERT INTO users (username, password_hash, role)
@@ -99,6 +107,8 @@ export async function getUserByUsername(username) {
 }
 
 export async function verifyUserCredentials(username, password) {
+  // 登录时先查用户，再校验密码哈希；对上层只返回公开用户信息，
+  // 不把 password_hash 继续往外传。
   const user = await getUserByUsername(username);
   if (!user) return null;
   const valid = verifyPassword(String(password ?? ""), user.password_hash);
@@ -112,6 +122,8 @@ export async function verifyUserCredentials(username, password) {
 
 export async function createSession(userId) {
   await ensureAuthSchema();
+  // 浏览器 cookie 里存的就是这个随机 token。
+  // 真正有效的 session 状态以 user_sessions 表为准，由服务端控制过期时间。
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
   const pool = getPool();
@@ -150,6 +162,8 @@ export async function getSessionByToken(token) {
   const row = rows[0];
   if (!row) return null;
   if (new Date(row.expires_at).getTime() <= Date.now()) {
+    // 读到过期 session 时顺手删掉，避免浏览器里残留的旧 cookie
+    // 一直还能被解析成一个有效身份。
     await deleteSession(token);
     return null;
   }

@@ -940,12 +940,16 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
 
   const whereClause = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 
+  const innerOrder = "ORDER BY ts DESC";
+  const innerLimit = limit ? limitClause : "";
+
   const { rows } = await pool.query(
     `
     SELECT
       ts,
       price_mid,
       ema20,
+      ema50,
       macd,
       rsi_7,
       rsi_14,
@@ -956,10 +960,28 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
       atr_14,
       ema20_htf,
       ema50_htf
-    FROM market_price_history
-    ${whereClause}
+    FROM (
+      SELECT
+        ts,
+        price_mid,
+        ema20,
+        ema50,
+        macd,
+        rsi_7,
+        rsi_14,
+        open_interest,
+        funding_rate,
+        volume,
+        atr_3,
+        atr_14,
+        ema20_htf,
+        ema50_htf
+      FROM market_price_history
+      ${whereClause}
+      ${innerOrder}
+      ${innerLimit}
+    ) recent_rows
     ORDER BY ts ASC
-    ${limit ? limitClause : ""}
     `,
     params
   );
@@ -968,6 +990,7 @@ export async function getMarketSeries(symbol, timeframe, options = {}) {
     ts: row.ts.getTime(),
     price_mid: row.price_mid != null ? toNumber(row.price_mid) : null,
     ema20: row.ema20 != null ? toNumber(row.ema20) : null,
+    ema50: row.ema50 != null ? toNumber(row.ema50) : null,
     macd: row.macd != null ? toNumber(row.macd) : null,
     rsi_7: row.rsi_7 != null ? toNumber(row.rsi_7) : null,
     rsi_14: row.rsi_14 != null ? toNumber(row.rsi_14) : null,

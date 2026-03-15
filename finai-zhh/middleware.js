@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 const PUBLIC_PATHS = ["/", "/auth"];
 const PUBLIC_API_PREFIX = "/api/auth";
+const PUBLIC_API_PATHS = ["/api/asset-logo"];
 const DASHBOARD_PREFIXES = ["/dashboard", "/models", "/settings"];
 
 function isPublicPath(pathname) {
@@ -22,6 +23,10 @@ function isApiRequest(pathname) {
   return pathname.startsWith("/api/");
 }
 
+function isPublicApiPath(pathname) {
+  return PUBLIC_API_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
 function isProtectedDashboard(pathname) {
   return DASHBOARD_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
@@ -39,7 +44,10 @@ export function middleware(request) {
     return NextResponse.next();
   }
 
-  if (isApiRequest(pathname) && pathname.startsWith(PUBLIC_API_PREFIX)) {
+  if (
+    isApiRequest(pathname) &&
+    (pathname.startsWith(PUBLIC_API_PREFIX) || isPublicApiPath(pathname))
+  ) {
     return NextResponse.next();
   }
 

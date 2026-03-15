@@ -145,23 +145,20 @@ async function loadSeries(symbol, timeframe, limit = 40) {
  * 
  * 输出格式示例:
  * ```
- * ### ALL BTCUSDT DATA
+ * ### BTC 全量市场数据
  * current_price = 67850.5, current_ema20 = 67200.3, current_macd = 123.45, current_rsi (7 period) = 62.3
- * In addition, here is the latest open interest and funding rate for perps (the instrument you are trading):
- * Open Interest: Latest: 1234567890 Average: 1200000000
- * Funding Rate: 0.000125
- * Intraday series (by minute, oldest → latest):
- * Mid prices: [67800, 67820, 67850, ...]
- * EMA indicators (20-period): [67150, 67180, 67200, ...]
- * MACD indicators: [120, 122, 123, ...]
- * RSI indicators (7-Period): [60, 61, 62, ...]
- * RSI indicators (14-Period): [55, 56, 58, ...]
- * Longer-term context (4-hour timeframe):
- * 20-Period EMA: 67100 vs. 50-Period EMA: 66800
- * 3-Period ATR: 450 vs. 14-Period ATR: 520
- * Current Volume: 12345678 vs. Average Volume: 11000000
- * MACD indicators: [100, 110, 115, ...]
- * RSI indicators (14-Period): [52, 54, 55, ...]
+ * 分钟级序列（最旧 -> 最新）:
+ * 中间价序列: [67800, 67820, 67850, ...]
+ * EMA(20): [67150, 67180, 67200, ...]
+ * MACD: [120, 122, 123, ...]
+ * RSI(7): [60, 61, 62, ...]
+ * RSI(14): [55, 56, 58, ...]
+ * 4小时级别上下文:
+ * EMA(20): 67100 vs. EMA(50): 66800
+ * ATR(3): 450 vs. ATR(14): 520
+ * 当前成交量: 12345678 vs. 平均成交量: 11000000
+ * 4小时 MACD: [100, 110, 115, ...]
+ * 4小时 RSI(14): [52, 54, 55, ...]
  * ```
  * 
  * @param {string} symbol - 交易对符号 (如 'BTCUSDT')
@@ -176,7 +173,7 @@ function formatMarketSection(symbol, snapshot, minuteSeries, htfSeries) {
   const latestHtf = htfSeries.at(-1) ?? {};
   
   // 构建标题
-  const title = `### ALL ${symbol.toUpperCase()} DATA`;
+  const title = `### ${symbol.toUpperCase()} 全量市场数据`;
   
   // 构建各个数据行
   const lines = [
@@ -188,34 +185,27 @@ function formatMarketSection(symbol, snapshot, minuteSeries, htfSeries) {
       snapshot?.rsi_7 ?? 0
     )}`,
     
-    // 永续合约特有数据 (持仓量和资金费率)
-    "In addition, here is the latest open interest and funding rate for perps (the instrument you are trading):",
-    `Open Interest: Latest: ${formatNumber(snapshot?.open_interest ?? 0)} Average: ${formatNumber(
-      snapshot?.open_interest_avg ?? 0
-    )}`,
-    `Funding Rate: ${formatNumber(snapshot?.funding_rate ?? 0, 6)}`, // 资金费率精度更高
-    
     // 分钟级时序数据 (短期趋势)
-    "Intraday series (by minute, oldest → latest):",
-    `Mid prices: ${formatSeries(minuteSeries.map((row) => row.price_mid))}`,
-    `EMA indicators (20-period): ${formatSeries(minuteSeries.map((row) => row.ema20))}`,
-    `MACD indicators: ${formatSeries(minuteSeries.map((row) => row.macd))}`,
-    `RSI indicators (7-Period): ${formatSeries(minuteSeries.map((row) => row.rsi_7))}`,
-    `RSI indicators (14-Period): ${formatSeries(minuteSeries.map((row) => row.rsi_14))}`,
+    "分钟级序列（最旧 -> 最新）:",
+    `中间价序列: ${formatSeries(minuteSeries.map((row) => row.price_mid))}`,
+    `EMA(20): ${formatSeries(minuteSeries.map((row) => row.ema20))}`,
+    `MACD: ${formatSeries(minuteSeries.map((row) => row.macd))}`,
+    `RSI(7): ${formatSeries(minuteSeries.map((row) => row.rsi_7))}`,
+    `RSI(14): ${formatSeries(minuteSeries.map((row) => row.rsi_14))}`,
     
     // 4小时级别数据 (长期趋势)
-    "Longer-term context (4-hour timeframe):",
-    `20-Period EMA: ${formatNumber(latestHtf?.ema20 ?? 0)} vs. 50-Period EMA: ${formatNumber(
+    "4小时级别上下文:",
+    `EMA(20): ${formatNumber(latestHtf?.ema20 ?? 0)} vs. EMA(50): ${formatNumber(
       latestHtf?.ema50 ?? 0
     )}`,
-    `3-Period ATR: ${formatNumber(latestHtf?.atr_3 ?? 0)} vs. 14-Period ATR: ${formatNumber(
+    `ATR(3): ${formatNumber(latestHtf?.atr_3 ?? 0)} vs. ATR(14): ${formatNumber(
       latestHtf?.atr_14 ?? 0
     )}`, // ATR (Average True Range) 波动率指标
-    `Current Volume: ${formatNumber(snapshot?.volume ?? latestMinute?.volume ?? 0)} vs. Average Volume: ${formatNumber(
+    `当前成交量: ${formatNumber(snapshot?.volume ?? latestMinute?.volume ?? 0)} vs. 平均成交量: ${formatNumber(
       snapshot?.volume_avg ?? latestMinute?.volume_avg ?? 0
     )}`,
-    `MACD indicators: ${formatSeries(htfSeries.map((row) => row.macd))}`,
-    `RSI indicators (14-Period): ${formatSeries(htfSeries.map((row) => row.rsi_14))}`,
+    `4小时 MACD: ${formatSeries(htfSeries.map((row) => row.macd))}`,
+    `4小时 RSI(14): ${formatSeries(htfSeries.map((row) => row.rsi_14))}`,
     "",
   ];
   
@@ -277,20 +267,20 @@ export async function buildMarketStateText(symbols = getTrackedSymbols()) {
  * 
  * 输出格式示例:
  * ```
- * ### HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE
- * Current Total Return (percent): 12.45
- * Available Cash: 11245.67
- * Current Account Value: 12245.67
- * Current live positions & performance: {"symbol":"BTCUSDT","quantity":0.5,"entry_price":67000,...} {"symbol":"ETHUSDT",...}
+ * ### 账户与绩效信息
+ * 当前总收益率(%): 12.45
+ * 可用资金: 11245.67
+ * 当前账户权益: 12245.67
+ * 当前持仓与表现: {"symbol":"BTCUSDT","quantity":0.5,"entry_price":67000,...} {"symbol":"ETHUSDT",...}
  * ```
  * 
  * 或者无持仓时:
  * ```
- * ### HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE
- * Current Total Return (percent): -2.34
- * Available Cash: 9766.00
- * Current Account Value: 9766.00
- * Current live positions & performance: 无持仓。
+ * ### 账户与绩效信息
+ * 当前总收益率(%): -2.34
+ * 可用资金: 9766.00
+ * 当前账户权益: 9766.00
+ * 当前持仓与表现: 无持仓。
  * ```
  * 
  * @param {string} modelId - 模型唯一标识符
@@ -321,10 +311,10 @@ export async function buildPositionStateText(modelId) {
   // 构建基础信息行
   // ------------------------------------------------------------------------
   const lines = [
-    "### HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE",
-    `Current Total Return (percent): ${formatNumber(pctReturn, 2)}`, // 总收益率 (%)
-    `Available Cash: ${formatNumber(account?.available_cash ?? latestEquity, 2)}`, // 可用余额
-    `Current Account Value: ${formatNumber(latestEquity, 2)}`, // 账户总价值
+    "### 账户与绩效信息",
+    `当前总收益率(%): ${formatNumber(pctReturn, 2)}`, // 总收益率 (%)
+    `可用资金: ${formatNumber(account?.available_cash ?? latestEquity, 2)}`, // 可用余额
+    `当前账户权益: ${formatNumber(latestEquity, 2)}`, // 账户总价值
   ];
 
   // ------------------------------------------------------------------------
@@ -332,7 +322,7 @@ export async function buildPositionStateText(modelId) {
   // ------------------------------------------------------------------------
   if (!positions.length) {
     // 无持仓时
-    lines.push("Current live positions & performance: 无持仓。");
+    lines.push("当前持仓与表现: 无持仓。");
     return lines.join("\n");
   }
 
@@ -359,7 +349,7 @@ export async function buildPositionStateText(modelId) {
     )
     .join(" "); // 用空格分隔多个持仓
 
-  lines.push(`Current live positions & performance: ${serialized}`);
+  lines.push(`当前持仓与表现: ${serialized}`);
   return lines.join("\n");
 }
 

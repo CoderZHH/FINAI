@@ -64,7 +64,7 @@ const SERIES_COLOR_MAP = {
   "icon:zhipu": "rgb(255, 255, 255)",
 };
 
-const BTC_ICON = "/api/asset-logo?symbol=BTC";
+const BTC_ICON = "/api/asset-logo?symbol=BTC&v=local-symbol-icons";
 const BASELINE_MODEL_PREFIX = "btc_benchmark";
 
 function isBaselineModelId(modelId) {
@@ -385,6 +385,7 @@ export default function ChartInner({
     const chart = chartRef.current;
     // 设置配置（第二个参数 true 表示不合并配置，完全替换）
     chart.setOption(chartOption, true);
+    requestAnimationFrame(() => chart.resize());
     
     // 监听窗口大小变化，自动调整图表尺寸
     const resize = () => chart.resize();
@@ -394,6 +395,19 @@ export default function ChartInner({
       window.removeEventListener("resize", resize);
     };
   }, [chartOption]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const chart = chartRef.current;
+    if (!container || !chart || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      chart.resize();
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
