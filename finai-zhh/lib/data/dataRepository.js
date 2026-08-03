@@ -2207,20 +2207,41 @@ export async function markToMarketAllModels() {
  * Fetch recent log entries for UI timelines / log console.
  * agent_logs acts as the unified audit trail (pending decisions, approvals, executions).
  */
-export async function getAgentLogs(limit = 20, { ownerUserId = null } = {}) {
+export async function getAgentLogs(
+  limit = 20,
+  { ownerUserId = null, beforeCreatedAt = null, beforeId = null } = {}
+) {
   const pool = getPool();
-  const where = ownerUserId
-    ? "WHERE model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $2)"
-    : "";
+  const params = [limit];
+  const where = [];
+
+  if (ownerUserId) {
+    params.push(ownerUserId);
+    where.push(`model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $${params.length})`);
+  }
+
+  if (beforeCreatedAt && beforeId) {
+    const normalizedBeforeCreatedAt =
+      typeof beforeCreatedAt === "number" || /^\d+$/.test(String(beforeCreatedAt))
+        ? new Date(Number(beforeCreatedAt))
+        : new Date(beforeCreatedAt);
+    params.push(normalizedBeforeCreatedAt);
+    const beforeCreatedAtIndex = params.length;
+    params.push(beforeId);
+    const beforeIdIndex = params.length;
+    where.push(`(created_at, id) < ($${beforeCreatedAtIndex}, $${beforeIdIndex})`);
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const { rows } = await pool.query(
     `
     SELECT id, model_id, public_message, cot_trace_summary, prompt_text, response_text, response_json, reasoning_content, created_at
     FROM agent_logs
-    ${where}
-    ORDER BY created_at DESC
+    ${whereClause}
+    ORDER BY created_at DESC, id DESC
     LIMIT $1
     `,
-    ownerUserId ? [limit, ownerUserId] : [limit]
+    params
   );
 
   return rows.map((row) => ({
@@ -2236,23 +2257,48 @@ export async function getAgentLogs(limit = 20, { ownerUserId = null } = {}) {
   }));
 }
 
-export async function getRecentTrades(limit = 20, { ownerUserId = null } = {}) {
+export async function getRecentTrades(
+  limit = 20,
+  { ownerUserId = null, beforeEntryTime = null, beforeId = null, completedOnly = false } = {}
+) {
   const pool = getPool();
   try {
-    const where = ownerUserId
-      ? "WHERE model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $2)"
-      : "";
+    const params = [limit];
+    const where = [];
+
+    if (ownerUserId) {
+      params.push(ownerUserId);
+      where.push(`model_id IN (SELECT model_id FROM agent_models WHERE owner_user_id = $${params.length})`);
+    }
+
+    if (completedOnly) {
+      where.push("exit_time IS NOT NULL");
+    }
+
+    if (beforeEntryTime && beforeId) {
+      const normalizedBeforeEntryTime =
+        typeof beforeEntryTime === "number" || /^\d+$/.test(String(beforeEntryTime))
+          ? new Date(Number(beforeEntryTime))
+          : new Date(beforeEntryTime);
+      params.push(normalizedBeforeEntryTime);
+      const beforeEntryTimeIndex = params.length;
+      params.push(beforeId);
+      const beforeIdIndex = params.length;
+      where.push(`(entry_time, id) < ($${beforeEntryTimeIndex}, $${beforeIdIndex})`);
+    }
+
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const { rows } = await pool.query(
       `
       SELECT id, model_id, symbol, side, leverage, quantity, entry_price, exit_price,
              entry_time, exit_time, holding_time, realized_net_pnl, decision_source,
              exit_plan
       FROM trades
-      ${where}
+      ${whereClause}
       ORDER BY entry_time DESC NULLS LAST, id DESC
       LIMIT $1
       `,
-      ownerUserId ? [limit, ownerUserId] : [limit]
+      params
     );
 
     return rows.map((row) => ({

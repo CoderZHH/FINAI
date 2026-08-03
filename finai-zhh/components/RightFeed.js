@@ -1,7 +1,8 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import useSWRInfinite from "swr/infinite";
 import clsx from "classnames";
 import CoinBadge from "./CoinBadge";
 import { resolveModelIcon, normaliseIconValue, DEFAULT_MODEL_ICON } from "../lib/llm/modelIcons";
@@ -482,19 +483,71 @@ function TradeCard({ trade }) {
   );
 }
 
-function CompletedPanel() {
-  const { data } = useSWR("/api/trades/recent", fetcher, { refreshInterval: 5000 });
-  const trades = (data?.trades ?? []).filter((trade) => Boolean(trade.exit_time));
+function CompletedPanel({ scrollRootRef = null }) {
+  const loadMoreRef = useRef(null);
+  const PAGE_SIZE = 20;
+  const getKey = (pageIndex, previousPageData) => {
+    if (previousPageData && !previousPageData.hasMore) return null;
+    if (pageIndex === 0) return `/api/trades/recent?limit=${PAGE_SIZE}`;
+    const cursor = previousPageData?.nextCursor;
+    if (!cursor?.beforeEntryTime || !cursor?.beforeId) return null;
+    return `/api/trades/recent?limit=${PAGE_SIZE}&beforeEntryTime=${encodeURIComponent(
+      cursor.beforeEntryTime
+    )}&beforeId=${encodeURIComponent(cursor.beforeId)}`;
+  };
+  const { data, setSize, isLoading, isValidating } = useSWRInfinite(getKey, fetcher, {
+    refreshInterval: 5000,
+    revalidateFirstPage: true,
+    revalidateAll: false,
+  });
+  const trades = data?.flatMap((page) => page?.trades ?? []) ?? [];
+  const hasMore = data?.length ? Boolean(data[data.length - 1]?.hasMore) : false;
+  const loadedCount = trades.length;
 
-  if (!trades.length) {
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasMore) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting || isValidating) return;
+        setSize((current) => current + 1);
+      },
+      {
+        root: scrollRootRef?.current ?? null,
+        rootMargin: "0px 0px 240px 0px",
+        threshold: 0.1,
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMore, isValidating, scrollRootRef, setSize]);
+
+  if (!trades.length && !isLoading) {
     return <div className="text-xs text-neutral-500">暂无成交记录</div>;
   }
 
   return (
     <div className="space-y-3">
+      <div className="sticky top-0 z-10 -mx-1 rounded-2xl border border-neutral-200/80 bg-white/90 px-3 py-2 text-[11px] text-neutral-500 shadow-sm backdrop-blur">
+        <div className="flex items-center justify-between gap-3">
+          <span>已加载 {loadedCount} 条成交记录</span>
+          <span>{hasMore ? "下滑继续加载" : "历史已全部显示"}</span>
+        </div>
+      </div>
       {trades.map((trade) => (
         <TradeCard key={trade.id} trade={trade} />
       ))}
+      <div ref={loadMoreRef} className="h-4" />
+      {isLoading && <div className="text-xs text-neutral-400">正在加载成交记录...</div>}
+      {!isLoading && isValidating && trades.length > 0 && (
+        <div className="text-xs text-neutral-400">正在加载更多成交记录...</div>
+      )}
+      {!hasMore && trades.length > 0 && (
+        <div className="text-center text-[11px] text-neutral-400">已经到底了</div>
+      )}
     </div>
   );
 }
@@ -530,25 +583,97 @@ function DecisionPanel({ readOnly = false }) {
   );
 }
 
-/** ---------- 模型对话面板 ---------- */
-function ModelChatPanel({ iconMap = {} }) {
-  const { data } = useSWR("/api/agents/logs", fetcher, { refreshInterval: 8000 });
-  const logs = data?.logs ?? [];
-
-  if (!logs.length) {
-    return <div className="text-xs text-neutral-500">暂无模型对话</div>;
-  }
-
-  const InnerSection = ({ title, children }) => (
+function ModelChatInnerSection({ title, children }) {
+  return (
     <details className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-[11px] text-neutral-600 transition data-[open=true]:bg-white">
       <summary className="cursor-pointer font-semibold text-neutral-700">{title}</summary>
       <div className="mt-2 text-neutral-700">{children}</div>
     </details>
   );
+}
+
+function getModelChatEntryKey(entry, index = 0) {
+  return String(entry?.id ?? `${entry?.model_id ?? "model"}-${entry?.timestamp ?? index}`);
+}
+
+/** ---------- 模型对话面板 ---------- */
+function ModelChatPanel({ iconMap = {}, scrollRootRef = null }) {
+  const loadMoreRef = useRef(null);
+  const [expandedLogIds, setExpandedLogIds] = useState(() => new Set());
+  const [didInitExpandedLog, setDidInitExpandedLog] = useState(false);
+  const PAGE_SIZE = 20;
+  const getKey = (pageIndex, previousPageData) => {
+    if (previousPageData && !previousPageData.hasMore) return null;
+    if (pageIndex === 0) return `/api/agents/logs?limit=${PAGE_SIZE}`;
+    const cursor = previousPageData?.nextCursor;
+    if (!cursor?.beforeCreatedAt || !cursor?.beforeId) return null;
+    return `/api/agents/logs?limit=${PAGE_SIZE}&beforeCreatedAt=${encodeURIComponent(
+      cursor.beforeCreatedAt
+    )}&beforeId=${encodeURIComponent(cursor.beforeId)}`;
+  };
+  const { data, setSize, isLoading, isValidating } = useSWRInfinite(getKey, fetcher, {
+    refreshInterval: 8000,
+    revalidateFirstPage: true,
+    revalidateAll: false,
+  });
+  const logs = data?.flatMap((page) => page?.logs ?? []) ?? [];
+  const hasMore = data?.length ? Boolean(data[data.length - 1]?.hasMore) : false;
+  const loadedCount = logs.length;
+  const firstLogKey = logs.length ? getModelChatEntryKey(logs[0], 0) : null;
+
+  useEffect(() => {
+    if (didInitExpandedLog || !firstLogKey) return;
+    setExpandedLogIds(new Set([firstLogKey]));
+    setDidInitExpandedLog(true);
+  }, [didInitExpandedLog, firstLogKey]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasMore) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting || isValidating) return;
+        setSize((current) => current + 1);
+      },
+      {
+        root: scrollRootRef?.current ?? null,
+        rootMargin: "0px 0px 240px 0px",
+        threshold: 0.1,
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMore, isValidating, setSize]);
+
+  if (!logs.length && !isLoading) {
+    return <div className="text-xs text-neutral-500">暂无模型对话</div>;
+  }
+
+  const handleLogToggle = (entryKey, isOpen) => {
+    setExpandedLogIds((current) => {
+      const next = new Set(current);
+      if (isOpen) {
+        next.add(entryKey);
+      } else {
+        next.delete(entryKey);
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="space-y-3">
+      <div className="sticky top-0 z-10 -mx-1 rounded-2xl border border-neutral-200/80 bg-white/90 px-3 py-2 text-[11px] text-neutral-500 shadow-sm backdrop-blur">
+        <div className="flex items-center justify-between gap-3">
+          <span>已加载 {loadedCount} 条模型对话</span>
+          <span>{hasMore ? "下滑继续加载" : "历史已全部显示"}</span>
+        </div>
+      </div>
       {logs.map((entry, index) => {
+        const entryKey = getModelChatEntryKey(entry, index);
         const payload = parseResponsePayload(entry.response_json) ?? {};
         const decisions = extractDecisionList(payload);
         const reasoningText =
@@ -564,9 +689,10 @@ function ModelChatPanel({ iconMap = {} }) {
 
         return (
           <details
-            key={entry.id ?? `${entry.model_id}-${entry.timestamp}`}
+            key={entryKey}
             className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-[12px] leading-relaxed shadow-sm"
-            open={index === 0}
+            open={expandedLogIds.has(entryKey)}
+            onToggle={(event) => handleLogToggle(entryKey, event.currentTarget.open)}
           >
             <summary className="flex cursor-pointer items-center justify-between gap-3 text-[11px] text-neutral-500">
               <div className="flex items-center gap-3">
@@ -583,20 +709,20 @@ function ModelChatPanel({ iconMap = {} }) {
             </summary>
             <div className="mt-3 space-y-3 border-t border-dashed border-neutral-200 pt-3">
               {promptText && (
-                <InnerSection title="用户提示词">
+                <ModelChatInnerSection title="用户提示词">
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 font-mono text-[11px] text-neutral-800">
                     {promptText}
                   </pre>
-                </InnerSection>
+                </ModelChatInnerSection>
               )}
               {reasoningText && (
-                <InnerSection title="思考过程">
+                <ModelChatInnerSection title="思考过程">
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-2 py-1 font-mono text-[11px] text-neutral-800">
                     {reasoningText}
                   </pre>
-                </InnerSection>
+                </ModelChatInnerSection>
               )}
-              <InnerSection title="返回结果">
+              <ModelChatInnerSection title="返回结果">
                 {decisions.length ? (
                   <div className="space-y-2">
                     {decisions.map((decision, idx) => {
@@ -628,11 +754,19 @@ function ModelChatPanel({ iconMap = {} }) {
                     本次回复未生成结构化决策。
                   </div>
                 )}
-              </InnerSection>
+              </ModelChatInnerSection>
             </div>
           </details>
         );
       })}
+      <div ref={loadMoreRef} className="h-4" />
+      {isLoading && <div className="text-xs text-neutral-400">正在加载模型对话...</div>}
+      {!isLoading && isValidating && logs.length > 0 && (
+        <div className="text-xs text-neutral-400">正在加载更多历史对话...</div>
+      )}
+      {!hasMore && logs.length > 0 && (
+        <div className="text-center text-[11px] text-neutral-400">已经到底了</div>
+      )}
     </div>
   );
 }
@@ -743,6 +877,7 @@ function ProposalPanel() {
 
 export default function RightFeed() {
   const [activeTab, setActiveTab] = useState("positions");
+  const scrollRootRef = useRef(null);
   const { data: meData } = useSWR("/api/auth/me", fetcher, {
     revalidateOnFocus: false,
   });
@@ -773,11 +908,11 @@ export default function RightFeed() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4">
+      <div ref={scrollRootRef} className="flex-1 overflow-y-auto px-3 py-4">
         {activeTab === "positions" && <PositionsPanel iconMap={iconMap} />}
-        {activeTab === "completed" && <CompletedPanel />}
+        {activeTab === "completed" && <CompletedPanel scrollRootRef={scrollRootRef} />}
         {activeTab === "decision" && <DecisionPanel readOnly={guestMode} />}
-        {activeTab === "modelchat" && <ModelChatPanel iconMap={iconMap} />}
+        {activeTab === "modelchat" && <ModelChatPanel iconMap={iconMap} scrollRootRef={scrollRootRef} />}
         {activeTab === "proposal" && <ProposalPanel />}
       </div>
     </aside>

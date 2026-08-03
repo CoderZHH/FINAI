@@ -6,6 +6,22 @@ export async function GET(request) {
   if (!auth.ok) return auth.response;
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 20);
-  const logs = await getAgentLogs(limit, { ownerUserId: auth.principal.userId });
-  return Response.json({ logs });
+  const beforeCreatedAt = url.searchParams.get("beforeCreatedAt");
+  const beforeId = url.searchParams.get("beforeId");
+  const logs = await getAgentLogs(limit, {
+    ownerUserId: auth.principal.userId,
+    beforeCreatedAt,
+    beforeId,
+  });
+  const lastLog = logs.at(-1) ?? null;
+  return Response.json({
+    logs,
+    hasMore: logs.length === limit,
+    nextCursor: lastLog
+      ? {
+          beforeCreatedAt: lastLog.timestamp,
+          beforeId: lastLog.id,
+        }
+      : null,
+  });
 }
